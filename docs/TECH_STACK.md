@@ -159,7 +159,7 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 
 ## 8. Roadmap (learning-friendly order)
 
-1. **Core basics** – `LocalFs`, listing, sorting, metadata. Unit tests with temp dirs.
+1. ✅ **Core basics** – `LocalFs`, listing, sorting, metadata. Unit tests with temp dirs.
 2. **TUI v0** – dual pane, navigate, F5 copy / F6 move / F7 mkdir / F8 delete (classic TC keys).
 3. **Job engine** – background copy/move queue with progress, pause, cancel, conflict prompts.
 4. **Watching** – live-refresh panes with `notify`.

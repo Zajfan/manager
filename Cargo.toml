@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/zajfan/manager"
+publish = false
+# license: not chosen yet, see docs/TECH_STACK.md "Open decisions"
+
+[workspace.dependencies]
+async-trait = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tempfile = "3"
