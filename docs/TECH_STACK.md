@@ -118,6 +118,16 @@ trait Vfs {
 }
 ```
 
+A `VPath` is a **base** (local disk or a server) plus a stack of **layers** (archives opened
+along the way). Its text form follows Apache Commons VFS:
+
+```text
+file:///home/me/notes.txt
+sftp://me@host/home/me/notes.txt
+zip:file:///home/me/photos.zip!/2024/img.jpg          ← inside a ZIP
+tar:zip:sftp://host/backup.zip!/inner.tar!/etc/hosts  ← TAR inside a ZIP on a server
+```
+
 Backends: `LocalFs`, `ZipFs`, `TarFs`, `SftpFs`, `OpenDalFs` (cloud), `AndroidSafFs`, plugin-provided FS.
 A copy from a ZIP on an SFTP server into Google Drive is then just "read stream from A → write stream to B".
 
@@ -160,8 +170,10 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 ## 8. Roadmap (learning-friendly order)
 
 1. ✅ **Core basics** – `LocalFs`, listing, sorting, metadata. Unit tests with temp dirs.
-2. **TUI v0** – dual pane, navigate, F5 copy / F6 move / F7 mkdir / F8 delete (classic TC keys).
-3. **Job engine** – background copy/move queue with progress, pause, cancel, conflict prompts.
+2. ✅ **TUI v0** – dual pane, navigate, mark, sort, hidden files, F7 mkdir. Plus `VPath`, the
+   path type that can address files on servers and inside archives.
+3. **Job engine** – background copy/move/delete queue with progress, pause, cancel, conflict prompts.
+   This is where F5 copy / F6 move / F8 delete land, so they're built once, the right way.
 4. **Watching** – live-refresh panes with `notify`.
 5. **Archives as folders** – enter a `.zip`/`.tar.gz` like a directory.
 6. **GUI v0** – Tauri desktop shell reusing the same core.
@@ -173,8 +185,7 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 
 ## 9. Open decisions
 
-- **License.** Suggested: **GPL-3.0** (guarantees forks stay open, like Double Commander) or
-  **MIT OR Apache-2.0** (Rust ecosystem default, most permissive). Pick one before the first code commit.
+- ~~**License.**~~ Decided: **GPL-3.0-or-later** (see `LICENSE`).
 - **SolidJS vs. Svelte** for the GUI frontend – both fine; decide when starting step 6.
 - **Project name.** `manager` is a placeholder.
 
