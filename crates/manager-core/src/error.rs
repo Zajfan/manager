@@ -20,6 +20,22 @@ pub enum Error {
     #[error("already exists: {0}")]
     AlreadyExists(VPath),
 
+    /// A rename that would have to move data between two different disks.
+    /// The job engine falls back to copy + delete when it sees this.
+    #[error("can't rename across devices: {0}")]
+    CrossesDevices(VPath),
+
+    /// Something that makes no sense, e.g. copying a folder into itself.
+    #[error("{0}")]
+    InvalidOperation(String),
+
+    #[error("couldn't move {path} to the trash: {message}")]
+    Trash { path: VPath, message: String },
+
+    /// The user cancelled the job. Not really an error, but it has to unwind the same way.
+    #[error("cancelled")]
+    Cancelled,
+
     /// Text that can't be turned into a valid [`VPath`] or file name.
     #[error("invalid path: {0}")]
     InvalidPath(String),
@@ -51,6 +67,7 @@ impl Error {
             io::ErrorKind::PermissionDenied => Error::PermissionDenied(path),
             io::ErrorKind::NotADirectory => Error::NotADirectory(path),
             io::ErrorKind::AlreadyExists => Error::AlreadyExists(path),
+            io::ErrorKind::CrossesDevices => Error::CrossesDevices(path),
             _ => Error::Io { path, source },
         }
     }

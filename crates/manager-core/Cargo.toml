@@ -13,5 +13,9 @@ async-trait.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
+# The system trash/recycle bin. Android and iOS have no shared trash to move files into.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+trash.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

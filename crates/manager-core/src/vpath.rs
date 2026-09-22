@@ -242,6 +242,60 @@ impl VPath {
         Ok(out)
     }
 
+    /// True if `self` is `other` or somewhere inside it. Used to refuse copying a
+    /// folder into itself, which would never end.
+    pub fn starts_with(&self, other: &VPath) -> bool {
+        let n = other.layers.len();
+        if n > self.layers.len() {
+            return false;
+        }
+        if n == 0 {
+            return match (&self.base, &other.base) {
+                (Base::Local(a), Base::Local(b)) => a.starts_with(b),
+                (
+                    Base::Remote {
+                        scheme: s1,
+                        authority: a1,
+                        path: p1,
+                    },
+                    Base::Remote {
+                        scheme: s2,
+                        authority: a2,
+                        path: p2,
+                    },
+                ) => s1 == s2 && a1 == a2 && p1.parts.starts_with(&p2.parts),
+                _ => false,
+            };
+        }
+        let (mine, theirs) = (&self.layers[n - 1], &other.layers[n - 1]);
+        self.base == other.base
+            && self.layers[..n - 1] == other.layers[..n - 1]
+            && mine.kind == theirs.kind
+            && mine.path.parts.starts_with(&theirs.path.parts)
+    }
+
+    /// Interprets what a user typed, relative to this folder, the way a shell would:
+    /// URIs and absolute paths are taken as they are; `backup`, `../old` and
+    /// `a/b` are resolved against `self`.
+    pub fn resolve(&self, input: &str) -> Result<VPath> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(self.clone());
+        }
+        if split_uri(input).is_some() || looks_absolute(input) {
+            return VPath::parse(input);
+        }
+        let mut out = self.clone();
+        for part in input.split(|c| c == '/' || (cfg!(windows) && c == '\\')) {
+            out = match part {
+                "" | "." => out,
+                ".." => out.parent().unwrap_or(out),
+                name => out.join(name)?,
+            };
+        }
+        Ok(out)
+    }
+
     /// The path of the innermost container file itself (the ZIP we are inside of), if any.
     pub fn outer(&self) -> Option<VPath> {
         let mut out = self.clone();
@@ -437,6 +491,15 @@ impl RawUri<'_> {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(VPath { base, layers })
+    }
+}
+
+/// `/x` everywhere; also `C:\\x`, `C:/x` and `\\\\server\\share` on Windows.
+fn looks_absolute(input: &str) -> bool {
+    if cfg!(windows) {
+        Path::new(input).is_absolute() || input.starts_with(['\\', '/'])
+    } else {
+        input.starts_with('/')
     }
 }
 
@@ -711,6 +774,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn starts_with_understands_layers() {
+        let dir = VPath::parse("sftp://host/a").unwrap();
+        let zip = VPath::parse("zip:sftp://host/a/b.zip!/x/y").unwrap();
+        let zip_x = VPath::parse("zip:sftp://host/a/b.zip!/x").unwrap();
+        assert!(zip.starts_with(&dir), "inside an archive inside the folder");
+        assert!(zip.starts_with(&zip_x));
+        assert!(zip.starts_with(&zip));
+        assert!(!zip_x.starts_with(&zip));
+        assert!(!dir.starts_with(&zip));
+        assert!(
+            !VPath::parse("sftp://host/ab").unwrap().starts_with(&dir),
+            "whole names only"
+        );
+        assert!(!VPath::parse("sftp://other/a").unwrap().starts_with(&dir));
+    }
+
+    #[test]
+    fn resolve_like_a_shell() {
+        let here = VPath::parse("sftp://host/home/me").unwrap();
+        let r = |s: &str| here.resolve(s).unwrap().to_string();
+        assert_eq!(r("docs"), "sftp://host/home/me/docs");
+        assert_eq!(r("a/b/"), "sftp://host/home/me/a/b");
+        assert_eq!(r("../you"), "sftp://host/home/you");
+        assert_eq!(r("../../../.."), "sftp://host/");
+        assert_eq!(r("./x"), "sftp://host/home/me/x");
+        assert_eq!(r(""), "sftp://host/home/me");
+        assert_eq!(r("sftp://other/tmp"), "sftp://other/tmp");
+    }
+
     #[cfg(unix)]
     mod unix {
         use super::*;
@@ -761,6 +854,15 @@ mod tests {
             let p = VPath::local(raw).unwrap();
             assert_eq!(p.to_uri(), "file:///tmp/caf%E9");
             assert_eq!(VPath::parse(&p.to_uri()).unwrap().as_local(), Some(raw));
+        }
+
+        #[test]
+        fn resolve_absolute_native_path() {
+            let here = VPath::parse("sftp://host/home").unwrap();
+            assert_eq!(
+                here.resolve("/tmp").unwrap().as_local(),
+                Some(Path::new("/tmp"))
+            );
         }
 
         #[test]
