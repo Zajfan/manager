@@ -31,6 +31,11 @@ pub enum Request {
         panel: usize,
         path: VPath,
     },
+    /// Watch `dir` for `panel`, replacing whatever that panel was watching.
+    Watch {
+        panel: usize,
+        dir: VPath,
+    },
     StartJob(JobSpec),
     Job {
         id: JobId,
@@ -59,6 +64,15 @@ pub enum Msg {
         panel: usize,
         path: VPath,
         result: Result<()>,
+    },
+    /// Something changed in the folder this panel is showing.
+    DirChanged {
+        panel: usize,
+    },
+    /// This panel's folder can't be watched, so it won't refresh itself.
+    WatchFailed {
+        panel: usize,
+        error: manager_core::Error,
     },
     /// The executor started a job we asked for.
     JobStarted {
@@ -257,6 +271,9 @@ pub struct App {
     pub focus: Focus,
     /// Oldest first; the first one is shown.
     pub questions: VecDeque<Question>,
+    /// The folder each panel currently has a file-system watch on, so we don't
+    /// re-watch the same folder on every reload.
+    watching: [Option<VPath>; 2],
     /// F10 was pressed once while jobs were running.
     quit_armed: bool,
     requests: Vec<Request>,
@@ -276,6 +293,7 @@ impl App {
             job_cursor: 0,
             focus: Focus::Panels,
             questions: VecDeque::new(),
+            watching: [None, None],
             quit_armed: false,
             requests: Vec::new(),
             next_id: 0,
@@ -304,6 +322,15 @@ impl App {
             path,
             focus,
         });
+    }
+
+    /// Asks for a file-system watch on `dir`, unless that panel already has one.
+    fn watch(&mut self, panel: usize, dir: VPath) {
+        if self.watching[panel].as_ref() == Some(&dir) {
+            return;
+        }
+        self.watching[panel] = Some(dir.clone());
+        self.requests.push(Request::Watch { panel, dir });
     }
 
     fn reload(&mut self, panel: usize) {
@@ -335,6 +362,8 @@ impl App {
                         if let Some(name) = focus {
                             p.focus(&name);
                         }
+                        let dir = p.path.clone();
+                        self.watch(panel, dir);
                     }
                     Err(err) => self.status = Some(Status::Error(err.to_string())),
                 }
@@ -356,6 +385,16 @@ impl App {
                 }
                 Err(err) => self.status = Some(Status::Error(err.to_string())),
             },
+            Msg::DirChanged { panel } => self.reload(panel),
+            Msg::WatchFailed { panel, error } => {
+                // Not fatal: the panel just won't notice changes made by other
+                // programs. Forget the watch so Ctrl+R or a trip to another
+                // folder and back will try again.
+                self.watching[panel] = None;
+                self.status = Some(Status::Info(format!(
+                    "No live refresh here, use Ctrl+R to refresh: {error}"
+                )));
+            }
             Msg::JobStarted { id, title } => self.jobs.push(JobView {
                 id,
                 title,
@@ -395,7 +434,9 @@ impl App {
             text.push_str(&format!(", {} skipped", report.skipped));
         }
         self.status = Some(Status::Info(text));
-        // The file watcher (roadmap step 4) will make this unnecessary.
+        // The watcher usually gets there first, but it can be unavailable
+        // (a file system that can't be watched, or no watch slots left), and a
+        // job's destination isn't always on screen. Reloading costs one listing.
         self.reload(0);
         self.reload(1);
     }
@@ -815,7 +856,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// An app that has finished starting up: both panels listed, and the
+    /// requests that startup generated (the listings and their watches)
+    /// already taken, so a test only sees what it causes itself.
     pub fn loaded_app() -> App {
+        let mut app = started_app();
+        app.take_requests();
+        app
+    }
+
+    /// Same, but with the startup requests still queued.
+    fn started_app() -> App {
         let mut app = App::new(vp("/home"), vp("/tmp"));
         serve(&mut app);
         app
@@ -837,6 +888,109 @@ pub(crate) mod tests {
             Some(Row::Entry(e)) => e.name.clone(),
             None => "<none>".into(),
         }
+    }
+
+    /// Every folder the app asked to watch, in order.
+    fn watch_requests(app: &mut App) -> Vec<(usize, VPath)> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Watch { panel, dir } => Some((panel, dir)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn load_requests(app: &mut App) -> Vec<(usize, VPath)> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Load { panel, path, .. } => Some((panel, path)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_loaded_panel_asks_to_be_watched() {
+        let mut app = started_app();
+        assert_eq!(
+            watch_requests(&mut app),
+            [(0, vp("/home")), (1, vp("/tmp"))]
+        );
+    }
+
+    #[test]
+    fn reloading_the_same_folder_does_not_watch_it_again() {
+        let mut app = loaded_app();
+
+        app.handle_key(ctrl(KeyCode::Char('r')));
+        serve(&mut app);
+
+        assert!(watch_requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn opening_a_folder_watches_the_new_one_instead() {
+        let mut app = loaded_app();
+
+        app.handle_key(key(KeyCode::Down)); // onto "docs"
+        app.handle_key(key(KeyCode::Enter));
+        serve(&mut app);
+
+        assert_eq!(watch_requests(&mut app), [(0, vp("/home/docs"))]);
+    }
+
+    #[test]
+    fn a_change_on_disk_reloads_only_that_panel() {
+        let mut app = loaded_app();
+        app.take_requests();
+
+        app.on_msg(Msg::DirChanged { panel: 1 });
+
+        assert_eq!(load_requests(&mut app), [(1, vp("/tmp"))]);
+    }
+
+    #[test]
+    fn a_change_on_disk_reloads_onto_the_name_under_the_cursor() {
+        let mut app = loaded_app();
+        app.take_requests();
+        app.handle_key(key(KeyCode::Down)); // "docs"
+        app.handle_key(key(KeyCode::Down)); // "a.txt"
+
+        app.on_msg(Msg::DirChanged { panel: 0 });
+
+        let focus = app.take_requests().into_iter().find_map(|r| match r {
+            Request::Load {
+                panel: 0, focus, ..
+            } => Some(focus),
+            _ => None,
+        });
+        assert_eq!(
+            focus,
+            Some(Some("a.txt".to_string())),
+            "the reload should put the cursor back on the same file"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_watched_says_so_without_breaking_the_panel() {
+        let mut app = loaded_app();
+        app.take_requests();
+
+        app.on_msg(Msg::WatchFailed {
+            panel: 0,
+            error: Error::Watch {
+                path: vp("/home"),
+                message: "out of watch slots".into(),
+            },
+        });
+
+        let Some(Status::Info(text)) = &app.status else {
+            panic!("expected an informational status, got {:?}", app.status);
+        };
+        assert!(text.contains("refresh"), "unhelpful message: {text}");
+        assert_eq!(names(&app.panels[0]), ["..", "docs", "a.txt", "b.txt"]);
     }
 
     #[test]

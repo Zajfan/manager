@@ -17,3 +17,6 @@ manager-core.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

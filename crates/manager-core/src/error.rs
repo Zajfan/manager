@@ -30,7 +30,13 @@ pub enum Error {
     InvalidOperation(String),
 
     #[error("couldn't move {path} to the trash: {message}")]
-    Trash { path: VPath, message: String },
+    Trash { path: VPath, message: Box<str> },
+
+    /// The folder exists but can't be watched for changes, e.g. because the
+    /// system ran out of watch slots. The panel still works; it just won't
+    /// refresh itself.
+    #[error("can't watch {path} for changes: {message}")]
+    Watch { path: VPath, message: Box<str> },
 
     /// The user cancelled the job. Not really an error, but it has to unwind the same way.
     #[error("cancelled")]
@@ -57,6 +63,14 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// `Error` travels in every `Result` the core returns, including hot ones like
+// `stat` on each entry of a big folder, so its size is worth keeping down.
+// A `VPath` alone is 96 bytes, which is most of it; the messages above are
+// boxed (they're written once and only ever read) to leave room for the rest.
+// Clippy's `result_large_err` complains at 128 bytes. If a new variant needs
+// more room than this leaves, box the `VPath`s rather than raising the number.
+const _: () = assert!(size_of::<Error>() <= 120);
 
 impl Error {
     /// Wraps an [`io::Error`] and remembers which path it happened on.

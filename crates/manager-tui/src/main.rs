@@ -10,10 +10,12 @@ mod ui;
 use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
+use manager_core::watch::{Coalescer, WatchHandle, WatchSink};
 use manager_core::{LocalFs, VPath, Vfs};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
@@ -145,12 +147,37 @@ struct Executor<'rt> {
     job_tx: UnboundedSender<JobEvent>,
     job_rx: UnboundedReceiver<JobEvent>,
     jobs: HashMap<JobId, JobHandle>,
+    /// What each panel is watching, once the watch has been set up.
+    watches: [Option<PanelWatch>; 2],
+    /// Counts watch requests per panel so a slow one can't overwrite a newer one.
+    watch_gen: [u64; 2],
+    watch_tx: Sender<WatchStarted>,
+    watch_rx: Receiver<WatchStarted>,
+}
+
+/// A live file-system watch on the folder one panel is showing.
+struct PanelWatch {
+    /// Set from the watcher's own thread whenever the folder changes.
+    changed: Arc<AtomicBool>,
+    /// Turns a burst of changes into at most a few reloads.
+    coalescer: Coalescer,
+    /// Dropping this stops the watch, so it has to stay alive here.
+    _handle: WatchHandle,
+}
+
+/// The result of setting up a watch, sent back from the background.
+struct WatchStarted {
+    panel: usize,
+    generation: u64,
+    changed: Arc<AtomicBool>,
+    result: manager_core::Result<WatchHandle>,
 }
 
 impl<'rt> Executor<'rt> {
     fn new(runtime: &'rt Runtime) -> Self {
         let (msg_tx, msg_rx) = mpsc::channel();
         let (job_tx, job_rx) = unbounded_channel();
+        let (watch_tx, watch_rx) = mpsc::channel();
         Executor {
             runtime,
             vfs: Arc::new(LocalFs::new()),
@@ -159,6 +186,10 @@ impl<'rt> Executor<'rt> {
             job_tx,
             job_rx,
             jobs: HashMap::new(),
+            watches: [None, None],
+            watch_gen: [0, 0],
+            watch_tx,
+            watch_rx,
         }
     }
 
@@ -181,6 +212,7 @@ impl<'rt> Executor<'rt> {
                 result: vfs.create_dir(&path).await,
                 path,
             }),
+            Request::Watch { panel, dir } => self.watch(panel, dir),
             Request::StartJob(spec) => {
                 let _inside_runtime = self.runtime.enter();
                 let handle = jobs::start(Arc::clone(&self.vfs), spec, self.job_tx.clone());
@@ -198,6 +230,73 @@ impl<'rt> Executor<'rt> {
                         JobAction::Cancel => handle.cancel(),
                     }
                 }
+            }
+        }
+    }
+
+    /// Starts watching `dir` for `panel`, replacing whatever it watched before.
+    ///
+    /// Setting up a watch is a system call that can be slow on a network share,
+    /// so it happens in the background like every other bit of disk work; the
+    /// result comes back through `watch_rx`.
+    fn watch(&mut self, panel: usize, dir: VPath) {
+        // Dropping the old watch first releases it before we ask for a new one.
+        self.watches[panel] = None;
+        self.watch_gen[panel] += 1;
+        let generation = self.watch_gen[panel];
+
+        let changed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&changed);
+        // This runs on the watcher's thread, so it does the least it can:
+        // raise a flag that the event loop reads on its next pass.
+        let sink: WatchSink = Arc::new(move |_dir| flag.store(true, Ordering::Relaxed));
+
+        let vfs = Arc::clone(&self.vfs);
+        let tx = self.watch_tx.clone();
+        self.runtime.spawn(async move {
+            let result = vfs.watch(&dir, sink).await;
+            let _ = tx.send(WatchStarted {
+                panel,
+                generation,
+                changed,
+                result,
+            });
+        });
+    }
+
+    /// Installs watches that finished setting up, and reports the ones that failed.
+    fn collect_watches(&mut self, app: &mut App) {
+        while let Ok(started) = self.watch_rx.try_recv() {
+            // The panel moved on while this was being set up; it's already stale.
+            if started.generation != self.watch_gen[started.panel] {
+                continue;
+            }
+            match started.result {
+                Ok(handle) => {
+                    self.watches[started.panel] = Some(PanelWatch {
+                        changed: started.changed,
+                        coalescer: Coalescer::default(),
+                        _handle: handle,
+                    });
+                }
+                Err(error) => app.on_msg(Msg::WatchFailed {
+                    panel: started.panel,
+                    error,
+                }),
+            }
+        }
+    }
+
+    /// Tells the app about folders that have changed and settled down.
+    fn poll_watches(&mut self, app: &mut App) {
+        let now = Instant::now();
+        for (panel, slot) in self.watches.iter_mut().enumerate() {
+            let Some(watch) = slot else { continue };
+            if watch.changed.swap(false, Ordering::Relaxed) {
+                watch.coalescer.touch(now);
+            }
+            if watch.coalescer.due(now) {
+                app.on_msg(Msg::DirChanged { panel });
             }
         }
     }
@@ -221,6 +320,8 @@ impl<'rt> Executor<'rt> {
         while let Ok(msg) = self.msg_rx.try_recv() {
             app.on_msg(msg);
         }
+        self.collect_watches(app);
+        self.poll_watches(app);
         for (&id, handle) in &self.jobs {
             app.on_msg(Msg::JobProgress {
                 id,
@@ -251,5 +352,166 @@ impl<'rt> Executor<'rt> {
                 Err(_) => std::thread::sleep(Duration::from_millis(10)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::thread;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// Runs the executor's half of the event loop until `done` is true or we
+    /// give up. Generous: these tests wait on the operating system.
+    fn pump(
+        executor: &mut Executor,
+        app: &mut App,
+        mut done: impl FnMut(&mut Executor, &mut App) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            executor.feed(app);
+            if done(executor, app) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    fn asked_to_reload(app: &mut App, panel: usize) -> bool {
+        app.take_requests()
+            .iter()
+            .any(|r| matches!(r, Request::Load { panel: p, .. } if *p == panel))
+    }
+
+    #[test]
+    fn a_change_on_disk_becomes_a_reload_request() {
+        let tmp = TempDir::new().unwrap();
+        let dir = VPath::local(tmp.path()).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let mut app = App::new(dir.clone(), dir.clone());
+        app.take_requests(); // the startup listings
+        let mut executor = Executor::new(&runtime);
+
+        executor.execute(Request::Watch { panel: 0, dir }, &mut app);
+        assert!(
+            pump(&mut executor, &mut app, |ex, _| ex.watches[0].is_some()),
+            "the watch was never set up"
+        );
+        app.take_requests();
+
+        fs::write(tmp.path().join("appeared.txt"), b"hello").unwrap();
+
+        assert!(
+            pump(&mut executor, &mut app, |_, app| asked_to_reload(app, 0)),
+            "the change never reached the app"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_watched_is_reported_to_the_app() {
+        let tmp = TempDir::new().unwrap();
+        let missing = VPath::local(tmp.path().join("not-there")).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let mut app = App::new(missing.clone(), missing.clone());
+        app.take_requests();
+        let mut executor = Executor::new(&runtime);
+
+        executor.execute(
+            Request::Watch {
+                panel: 0,
+                dir: missing,
+            },
+            &mut app,
+        );
+
+        assert!(
+            pump(&mut executor, &mut app, |_, app| app.status.is_some()),
+            "a failed watch should tell the user"
+        );
+        assert!(executor.watches[0].is_none());
+    }
+
+    #[test]
+    fn watching_a_new_folder_replaces_the_old_watch() {
+        let tmp = TempDir::new().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let mut app = App::new(VPath::local(&first).unwrap(), VPath::local(&first).unwrap());
+        app.take_requests();
+        let mut executor = Executor::new(&runtime);
+
+        executor.execute(
+            Request::Watch {
+                panel: 0,
+                dir: VPath::local(&first).unwrap(),
+            },
+            &mut app,
+        );
+        assert!(pump(&mut executor, &mut app, |ex, _| ex.watches[0].is_some()));
+
+        executor.execute(
+            Request::Watch {
+                panel: 0,
+                dir: VPath::local(&second).unwrap(),
+            },
+            &mut app,
+        );
+        assert!(pump(&mut executor, &mut app, |ex, _| ex.watches[0].is_some()));
+        app.take_requests();
+
+        // The old folder is no longer watched.
+        fs::write(first.join("ignored.txt"), b"hello").unwrap();
+        thread::sleep(Duration::from_millis(500));
+        executor.feed(&mut app);
+        assert!(!asked_to_reload(&mut app, 0), "the old watch is still live");
+
+        // The new one is.
+        fs::write(second.join("noticed.txt"), b"hello").unwrap();
+        assert!(pump(&mut executor, &mut app, |_, app| asked_to_reload(
+            app, 0
+        )));
+    }
+
+    #[test]
+    fn a_burst_of_changes_becomes_only_a_few_reloads() {
+        let tmp = TempDir::new().unwrap();
+        let dir = VPath::local(tmp.path()).unwrap();
+        let runtime = Runtime::new().unwrap();
+        let mut app = App::new(dir.clone(), dir.clone());
+        app.take_requests();
+        let mut executor = Executor::new(&runtime);
+
+        executor.execute(Request::Watch { panel: 0, dir }, &mut app);
+        assert!(pump(&mut executor, &mut app, |ex, _| ex.watches[0].is_some()));
+        app.take_requests();
+
+        // Something like unpacking an archive: many files, fast.
+        for i in 0..300 {
+            fs::write(tmp.path().join(format!("file{i}.bin")), b"x").unwrap();
+        }
+
+        let mut reloads = 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            executor.feed(&mut app);
+            if asked_to_reload(&mut app, 0) {
+                reloads += 1;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(reloads >= 1, "the burst should cause at least one reload");
+        assert!(
+            reloads <= 5,
+            "300 files caused {reloads} reloads; they should be coalesced"
+        );
     }
 }

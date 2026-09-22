@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::entry::LinkTarget;
 use crate::vfs::{ReadStream, WriteStream};
+use crate::watch::{WatchHandle, WatchSink};
 use crate::{Capabilities, Entry, EntryKind, Error, Permissions, Result, VPath, Vfs};
 
 /// The backend for the local computer's disks, built on `std::fs`.
@@ -36,7 +38,7 @@ impl Vfs for LocalFs {
             can_write: true,
             has_unix_permissions: cfg!(unix),
             has_symlinks: true,
-            can_watch: false, // arrives in roadmap step 4
+            can_watch: true,
             has_trash: cfg!(not(any(target_os = "android", target_os = "ios"))),
         }
     }
@@ -99,8 +101,33 @@ impl Vfs for LocalFs {
         run_blocking(move || {
             trash::delete(native(&path)?).map_err(|e| Error::Trash {
                 path: path.clone(),
-                message: e.to_string(),
+                message: e.to_string().into(),
             })
+        })
+        .await
+    }
+
+    async fn watch(&self, dir: &VPath, sink: WatchSink) -> Result<WatchHandle> {
+        let native = native(dir)?.to_path_buf();
+        let dir = dir.clone();
+        // Registering the watch is a system call that can block on a network
+        // share, so it goes to the blocking pool like everything else here.
+        run_blocking(move || {
+            let reported = dir.clone();
+            let mut watcher =
+                notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    // A watch error (a dropped event, a vanished folder) is
+                    // itself a reason to look at the folder again.
+                    if event.is_ok_and(|e| !is_noise(&e.kind)) {
+                        sink(reported.clone());
+                    }
+                })
+                .map_err(|e| watch_error(&dir, e))?;
+            watcher
+                .watch(&native, RecursiveMode::NonRecursive)
+                .map_err(|e| watch_error(&dir, e))?;
+            // The watch lives exactly as long as the watcher does.
+            Ok(WatchHandle::new(watcher))
         })
         .await
     }
@@ -133,6 +160,27 @@ impl Vfs for LocalFs {
             apply_permissions(native(&path)?, permissions).map_err(|e| Error::from_io(&path, e))
         })
         .await
+    }
+}
+
+/// Events that change nothing a panel shows.
+///
+/// Reading a file fires access events on Linux, so without this a panel would
+/// reload itself every time anything opened a file in it, previews included.
+fn is_noise(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::Access(_))
+}
+
+fn watch_error(path: &VPath, err: notify::Error) -> Error {
+    match err.kind {
+        notify::ErrorKind::PathNotFound => Error::NotFound(path.clone()),
+        notify::ErrorKind::Io(source) => Error::from_io(path, source),
+        // Out of watch slots (`fs.inotify.max_user_watches`), an unsupported
+        // file system, and anything else the platform throws at us.
+        _ => Error::Watch {
+            path: path.clone(),
+            message: err.to_string().into(),
+        },
     }
 }
 

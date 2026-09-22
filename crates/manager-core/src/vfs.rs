@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::watch::{WatchHandle, WatchSink};
 use crate::{Entry, Error, Permissions, Result, VPath};
 
 /// A stream of bytes being read from a file.
@@ -67,6 +68,16 @@ pub trait Vfs: Send + Sync {
     /// Moves a file or folder to the system trash / recycle bin.
     async fn trash(&self, path: &VPath) -> Result<()> {
         Err(unsupported(self.name(), path))
+    }
+
+    /// Reports changes in `dir` to `sink` until the returned handle is dropped.
+    ///
+    /// Shallow: only the folder's own contents count, not what happens inside
+    /// its subfolders. Backends that can't watch return an error, which the UI
+    /// treats as "no live refresh here" rather than as a failure.
+    async fn watch(&self, dir: &VPath, sink: WatchSink) -> Result<WatchHandle> {
+        let _ = sink;
+        Err(unsupported(self.name(), dir))
     }
 
     async fn create_symlink(&self, target: &Path, link: &VPath, target_is_dir: bool) -> Result<()> {

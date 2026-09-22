@@ -113,7 +113,7 @@ trait Vfs {
     async fn open_write(&self, path: &VPath) -> Result<Box<dyn AsyncWrite>>;
     async fn rename(&self, from: &VPath, to: &VPath) -> Result<()>;
     async fn remove(&self, path: &VPath) -> Result<()>;
-    fn watch(&self, path: &VPath) -> Option<WatchStream>;
+    fn watch(&self, dir: &VPath, sink: WatchSink) -> Result<WatchHandle>;
     fn capabilities(&self) -> Caps; // can it rename? has permissions? supports watching?
 }
 ```
@@ -190,7 +190,8 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    path type that can address files on servers and inside archives.
 3. ✅ **Job engine** – background copy/move/delete with progress, pause, cancel, conflict and
    error prompts. F5 copy / F6 move / F8 trash / Shift+F8 delete in the TUI.
-4. **Watching** – live-refresh panes with `notify`.
+4. ✅ **Watching** – panels refresh themselves when something else changes the
+   folder, with bursts coalesced so a big copy doesn't cause a reload per file.
 5. **Archives as folders** – enter a `.zip`/`.tar.gz` like a directory.
 6. **GUI v0** – Tauri desktop shell reusing the same core.
 7. **Previews / quick view** – text, images, PDF, media.
