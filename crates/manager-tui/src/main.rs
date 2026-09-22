@@ -119,10 +119,10 @@ fn run(terminal: &mut DefaultTerminal, runtime: &Runtime, mut app: App) -> std::
         }
 
         // Wait briefly for a key so background results still show up promptly.
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
-            }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            app.handle_key(key);
         }
         while let Ok(msg) = rx.try_recv() {
             app.on_msg(msg);
