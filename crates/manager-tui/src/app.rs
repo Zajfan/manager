@@ -5,11 +5,17 @@
 //! answer back as a [`Msg`]. That keeps the UI responsive on slow drives and
 //! makes all of this logic testable with plain unit tests.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
+use manager_core::jobs::{
+    ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent, JobId,
+    JobReport, JobSpec, Outcome, Progress,
+};
 use manager_core::{Entry, Result, SortKey, SortOrder, SortSpec, VPath, sort_entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
+
+use crate::format;
 
 /// Work for the background executor.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +31,18 @@ pub enum Request {
         panel: usize,
         path: VPath,
     },
+    StartJob(JobSpec),
+    Job {
+        id: JobId,
+        action: JobAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobAction {
+    Pause,
+    Resume,
+    Cancel,
 }
 
 /// Results coming back from the background executor.
@@ -42,6 +60,17 @@ pub enum Msg {
         path: VPath,
         result: Result<()>,
     },
+    /// The executor started a job we asked for.
+    JobStarted {
+        id: JobId,
+        title: String,
+    },
+    /// Fresh numbers for a running job (sent every frame).
+    JobProgress {
+        id: JobId,
+        progress: Progress,
+    },
+    Job(JobEvent),
 }
 
 /// One line of a panel: the `..` "go up" line, or a real entry.
@@ -59,7 +88,51 @@ pub enum Status {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
-    MkDir { input: String },
+    MkDir {
+        input: String,
+    },
+    /// F5 / F6: where should the selection go?
+    Transfer {
+        is_move: bool,
+        sources: Vec<VPath>,
+        input: String,
+    },
+    /// F8 / Shift+F8: are you sure?
+    Delete {
+        targets: Vec<VPath>,
+        permanent: bool,
+    },
+}
+
+/// A running job as the UI sees it.
+#[derive(Debug, Clone)]
+pub struct JobView {
+    pub id: JobId,
+    pub title: String,
+    pub progress: Progress,
+}
+
+/// A job waiting for the user to decide something.
+#[derive(Debug)]
+pub enum Question {
+    Conflict(Box<ConflictQuestion>),
+    Error(ErrorQuestion),
+}
+
+impl Question {
+    fn job(&self) -> JobId {
+        match self {
+            Question::Conflict(q) => q.job,
+            Question::Error(q) => q.job,
+        }
+    }
+}
+
+/// Where the arrow keys go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Panels,
+    Jobs,
 }
 
 pub struct Panel {
@@ -179,6 +252,13 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub status: Option<Status>,
     pub should_quit: bool,
+    pub jobs: Vec<JobView>,
+    pub job_cursor: usize,
+    pub focus: Focus,
+    /// Oldest first; the first one is shown.
+    pub questions: VecDeque<Question>,
+    /// F10 was pressed once while jobs were running.
+    quit_armed: bool,
     requests: Vec<Request>,
     next_id: u64,
 }
@@ -192,6 +272,11 @@ impl App {
             dialog: None,
             status: None,
             should_quit: false,
+            jobs: Vec::new(),
+            job_cursor: 0,
+            focus: Focus::Panels,
+            questions: VecDeque::new(),
+            quit_armed: false,
             requests: Vec::new(),
             next_id: 0,
         };
@@ -271,7 +356,48 @@ impl App {
                 }
                 Err(err) => self.status = Some(Status::Error(err.to_string())),
             },
+            Msg::JobStarted { id, title } => self.jobs.push(JobView {
+                id,
+                title,
+                progress: Progress::default(),
+            }),
+            Msg::JobProgress { id, progress } => {
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                    job.progress = progress;
+                }
+            }
+            Msg::Job(JobEvent::Conflict(q)) => self.questions.push_back(Question::Conflict(q)),
+            Msg::Job(JobEvent::Error(q)) => self.questions.push_back(Question::Error(q)),
+            Msg::Job(JobEvent::Finished(report)) => self.job_finished(report),
         }
+    }
+
+    fn job_finished(&mut self, report: JobReport) {
+        self.jobs.retain(|j| j.id != report.job);
+        self.questions.retain(|q| q.job() != report.job);
+        self.job_cursor = self.job_cursor.min(self.jobs.len().saturating_sub(1));
+        if self.jobs.is_empty() {
+            self.focus = Focus::Panels;
+            self.quit_armed = false;
+        }
+
+        let mut text = match report.outcome {
+            Outcome::Completed => format!(
+                "Done: {} ({}, {}) in {:.1}s",
+                report.title,
+                format::count(report.items, "item"),
+                format::size_with_unit(report.bytes),
+                report.elapsed.as_secs_f64()
+            ),
+            Outcome::Cancelled => format!("Cancelled: {}", report.title),
+        };
+        if report.skipped > 0 {
+            text.push_str(&format!(", {} skipped", report.skipped));
+        }
+        self.status = Some(Status::Info(text));
+        // The file watcher (roadmap step 4) will make this unnecessary.
+        self.reload(0);
+        self.reload(1);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -283,16 +409,29 @@ impl App {
             self.handle_dialog_key(key);
             return;
         }
+        if !self.questions.is_empty() {
+            self.handle_question_key(key);
+            return;
+        }
         self.status = None;
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        match key.code {
+            KeyCode::F(10) => return self.quit(),
+            KeyCode::Char('q' | 'c') if ctrl => return self.quit(),
+            KeyCode::Char('j') if ctrl => return self.toggle_job_focus(),
+            _ => {}
+        }
+        if self.focus == Focus::Jobs {
+            self.handle_jobs_key(key);
+            return;
+        }
         let page = self.active_panel().page_height.max(1) as isize;
 
         match key.code {
-            KeyCode::F(10) => self.should_quit = true,
-            KeyCode::Char('q' | 'c') if ctrl => self.should_quit = true,
-
             KeyCode::Up => self.panels[self.active].move_cursor(-1),
             KeyCode::Down => self.panels[self.active].move_cursor(1),
             KeyCode::PageUp => self.panels[self.active].move_cursor(-page),
@@ -314,46 +453,230 @@ impl App {
             KeyCode::F(5) if ctrl => self.sort_by(SortKey::Modified),
             KeyCode::F(6) if ctrl => self.sort_by(SortKey::Size),
 
+            KeyCode::F(5) => self.open_transfer(false),
+            KeyCode::F(6) => self.open_transfer(true),
             KeyCode::F(7) => {
                 self.dialog = Some(Dialog::MkDir {
                     input: String::new(),
                 })
             }
-            KeyCode::F(3..=6) | KeyCode::F(8) => {
+            KeyCode::F(8) | KeyCode::Delete => self.open_delete(shift),
+            KeyCode::F(3 | 4) => {
                 self.status = Some(Status::Info(
-                    "View, edit, copy, move and delete arrive with the job engine (roadmap step 3)"
-                        .into(),
+                    "View and edit arrive with previews (roadmap step 7)".into(),
                 ))
             }
             _ => {}
         }
     }
 
+    /// With jobs running, the first quit only warns: quitting cancels them.
+    fn quit(&mut self) {
+        if self.jobs.is_empty() || self.quit_armed {
+            self.should_quit = true;
+        } else {
+            self.quit_armed = true;
+            self.status = Some(Status::Error(format!(
+                "{} job(s) still running. Press F10 again to cancel them and quit.",
+                self.jobs.len()
+            )));
+        }
+    }
+
+    fn toggle_job_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::Panels if !self.jobs.is_empty() => Focus::Jobs,
+            _ => Focus::Panels,
+        };
+    }
+
+    fn handle_jobs_key(&mut self, key: KeyEvent) {
+        let Some(job) = self.jobs.get(self.job_cursor) else {
+            self.focus = Focus::Panels;
+            return;
+        };
+        let id = job.id;
+        let paused = job.progress.paused;
+        match key.code {
+            KeyCode::Up => self.job_cursor = self.job_cursor.saturating_sub(1),
+            KeyCode::Down => self.job_cursor = (self.job_cursor + 1).min(self.jobs.len() - 1),
+            KeyCode::Char('p' | 'P' | ' ') => {
+                let action = if paused {
+                    JobAction::Resume
+                } else {
+                    JobAction::Pause
+                };
+                self.requests.push(Request::Job { id, action });
+            }
+            KeyCode::Char('c' | 'C') | KeyCode::Delete => self.requests.push(Request::Job {
+                id,
+                action: JobAction::Cancel,
+            }),
+            KeyCode::Esc | KeyCode::Tab => self.focus = Focus::Panels,
+            _ => {}
+        }
+    }
+
+    /// Conflict: o/u/s/r (Shift = same for all), c/Esc cancels the job.
+    /// Error: r retry, s skip, a skip all, c/Esc cancel the job.
+    fn handle_question_key(&mut self, key: KeyEvent) {
+        let KeyCode::Char(c) = key.code else {
+            if key.code == KeyCode::Esc {
+                self.answer_current('c');
+            }
+            return;
+        };
+        self.answer_current(c);
+    }
+
+    fn answer_current(&mut self, c: char) {
+        let Some(question) = self.questions.pop_front() else {
+            return;
+        };
+        match question {
+            Question::Conflict(q) => {
+                let action = match c.to_ascii_lowercase() {
+                    'o' => ConflictAction::Overwrite,
+                    'u' => ConflictAction::OverwriteOlder,
+                    's' => ConflictAction::Skip,
+                    'r' => ConflictAction::Rename,
+                    'c' => ConflictAction::Cancel,
+                    _ => {
+                        self.questions.push_front(Question::Conflict(q));
+                        return;
+                    }
+                };
+                q.answer(ConflictAnswer {
+                    action,
+                    apply_to_all: c.is_ascii_uppercase(),
+                });
+            }
+            Question::Error(q) => {
+                let answer = match c.to_ascii_lowercase() {
+                    'r' => ErrorAnswer::Retry,
+                    's' => ErrorAnswer::Skip,
+                    'a' => ErrorAnswer::SkipAll,
+                    'c' => ErrorAnswer::Cancel,
+                    _ => {
+                        self.questions.push_front(Question::Error(q));
+                        return;
+                    }
+                };
+                q.answer(answer);
+            }
+        }
+    }
+
+    /// Marked entries (in display order), or the one under the cursor.
+    fn selection(&self) -> Vec<VPath> {
+        let panel = self.active_panel();
+        let marked: Vec<VPath> = panel
+            .entries()
+            .iter()
+            .filter(|e| panel.marked.contains(&e.name))
+            .map(|e| e.path.clone())
+            .collect();
+        if !marked.is_empty() {
+            return marked;
+        }
+        match panel.current() {
+            Some(Row::Entry(e)) => vec![e.path.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn open_transfer(&mut self, is_move: bool) {
+        let sources = self.selection();
+        if sources.is_empty() {
+            return;
+        }
+        let input = editable(&self.panels[1 - self.active].path);
+        self.dialog = Some(Dialog::Transfer {
+            is_move,
+            sources,
+            input,
+        });
+    }
+
+    fn open_delete(&mut self, permanent: bool) {
+        let targets = self.selection();
+        if !targets.is_empty() {
+            self.dialog = Some(Dialog::Delete { targets, permanent });
+        }
+    }
+
+    fn start_job(&mut self, spec: JobSpec) {
+        self.panels[self.active].marked.clear();
+        self.requests.push(Request::StartJob(spec));
+    }
+
     fn handle_dialog_key(&mut self, key: KeyEvent) {
-        let Some(Dialog::MkDir { input }) = &mut self.dialog else {
+        let Some(dialog) = &mut self.dialog else {
+            return;
+        };
+        if key.code == KeyCode::Esc {
+            self.dialog = None;
+            return;
+        }
+
+        // Yes/no dialogs.
+        if let Dialog::Delete { .. } = dialog {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                    if let Some(Dialog::Delete { targets, permanent }) = self.dialog.take() {
+                        self.start_job(JobSpec::Delete { targets, permanent });
+                    }
+                }
+                KeyCode::Char('n' | 'N') => self.dialog = None,
+                _ => {}
+            }
+            return;
+        }
+
+        // Text-input dialogs.
+        let (Dialog::MkDir { input } | Dialog::Transfer { input, .. }) = dialog else {
             return;
         };
         match key.code {
-            KeyCode::Esc => self.dialog = None,
             KeyCode::Backspace => {
                 input.pop();
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => input.push(c),
-            KeyCode::Enter => {
-                let name = input.trim().to_string();
-                self.dialog = None;
-                if name.is_empty() {
-                    return;
-                }
-                match self.panels[self.active].path.join(&name) {
-                    Ok(path) => self.requests.push(Request::CreateDir {
-                        panel: self.active,
-                        path,
-                    }),
-                    Err(err) => self.status = Some(Status::Error(err.to_string())),
-                }
-            }
+            KeyCode::Enter => match self.dialog.take() {
+                Some(Dialog::MkDir { input }) => self.submit_mkdir(input.trim()),
+                Some(Dialog::Transfer {
+                    is_move,
+                    sources,
+                    input,
+                }) => self.submit_transfer(is_move, sources, &input),
+                _ => {}
+            },
             _ => {}
+        }
+    }
+
+    fn submit_mkdir(&mut self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        match self.panels[self.active].path.join(name) {
+            Ok(path) => self.requests.push(Request::CreateDir {
+                panel: self.active,
+                path,
+            }),
+            Err(err) => self.status = Some(Status::Error(err.to_string())),
+        }
+    }
+
+    fn submit_transfer(&mut self, is_move: bool, sources: Vec<VPath>, input: &str) {
+        if input.trim().is_empty() {
+            return;
+        }
+        // Relative input like `backup` or `../x` means relative to the current folder.
+        match self.panels[self.active].path.resolve(input) {
+            Ok(dest) if is_move => self.start_job(JobSpec::Move { sources, dest }),
+            Ok(dest) => self.start_job(JobSpec::Copy { sources, dest }),
+            Err(err) => self.status = Some(Status::Error(err.to_string())),
         }
     }
 
@@ -414,6 +737,15 @@ impl App {
         };
         panel.sort.key = key;
         panel.refresh_view(show_hidden);
+    }
+}
+
+/// How a path is shown in an input box: native for local paths (`/home/me`, `C:\Users`),
+/// the full URI otherwise, so it can be parsed back exactly.
+fn editable(path: &VPath) -> String {
+    match path.as_local() {
+        Some(local) => local.display().to_string(),
+        None => path.to_uri(),
     }
 }
 
@@ -709,6 +1041,292 @@ pub(crate) mod tests {
         release.kind = KeyEventKind::Release;
         app.handle_key(release);
         assert_eq!(app.active_panel().cursor, 0);
+    }
+
+    fn shift(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn started_job(app: &mut App) -> JobSpec {
+        match app.take_requests().as_slice() {
+            [Request::StartJob(spec)] => spec.clone(),
+            other => panic!("expected one StartJob, got {other:?}"),
+        }
+    }
+
+    fn running_job(app: &mut App, id: JobId) {
+        app.on_msg(Msg::JobStarted {
+            id,
+            title: format!("Job {id}"),
+        });
+    }
+
+    #[test]
+    fn f5_copies_the_current_entry_to_the_other_panel() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::End)); // b.txt
+        app.handle_key(key(KeyCode::F(5)));
+        assert!(matches!(
+            &app.dialog,
+            Some(Dialog::Transfer { is_move: false, input, .. }) if input == "sftp://test/tmp"
+        ));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            started_job(&mut app),
+            JobSpec::Copy {
+                sources: vec![vp("/home/b.txt")],
+                dest: vp("/tmp"),
+            }
+        );
+    }
+
+    #[test]
+    fn f5_uses_marked_entries_in_display_order_and_clears_marks() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::End));
+        app.handle_key(key(KeyCode::Insert)); // b.txt
+        app.handle_key(key(KeyCode::Home));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Insert)); // docs
+        app.handle_key(key(KeyCode::F(5)));
+        app.handle_key(key(KeyCode::Enter));
+        let JobSpec::Copy { sources, .. } = started_job(&mut app) else {
+            panic!()
+        };
+        assert_eq!(sources, [vp("/home/docs"), vp("/home/b.txt")]);
+        assert!(app.panels[0].marked.is_empty());
+    }
+
+    #[test]
+    fn f5_on_parent_row_does_nothing() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::F(5)));
+        assert_eq!(app.dialog, None);
+    }
+
+    #[test]
+    fn f6_moves_to_a_typed_relative_path() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::End));
+        app.handle_key(key(KeyCode::F(6)));
+        // Clear the suggested path and type a relative one.
+        for _ in 0.."sftp://test/tmp".len() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut app, "docs/renamed.txt");
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            started_job(&mut app),
+            JobSpec::Move {
+                sources: vec![vp("/home/b.txt")],
+                dest: vp("/home/docs/renamed.txt"),
+            }
+        );
+    }
+
+    #[test]
+    fn f8_trashes_and_shift_f8_deletes_after_confirming() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::End));
+        app.handle_key(key(KeyCode::F(8)));
+        app.handle_key(key(KeyCode::Char('y')));
+        assert_eq!(
+            started_job(&mut app),
+            JobSpec::Delete {
+                targets: vec![vp("/home/b.txt")],
+                permanent: false
+            }
+        );
+
+        app.handle_key(shift(KeyCode::Delete));
+        assert!(matches!(
+            app.dialog,
+            Some(Dialog::Delete {
+                permanent: true,
+                ..
+            })
+        ));
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            started_job(&mut app),
+            JobSpec::Delete {
+                permanent: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn delete_can_be_declined() {
+        let mut app = loaded_app();
+        app.handle_key(key(KeyCode::End));
+        for decline in [KeyCode::Char('n'), KeyCode::Esc] {
+            app.handle_key(key(KeyCode::F(8)));
+            app.handle_key(key(decline));
+            assert_eq!(app.dialog, None);
+            assert!(app.take_requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn conflict_keys_answer_the_job() {
+        let dir = vp("/x");
+        for (c, action, all) in [
+            ('o', ConflictAction::Overwrite, false),
+            ('O', ConflictAction::Overwrite, true),
+            ('u', ConflictAction::OverwriteOlder, false),
+            ('s', ConflictAction::Skip, false),
+            ('R', ConflictAction::Rename, true),
+            ('c', ConflictAction::Cancel, false),
+        ] {
+            let mut app = loaded_app();
+            let (q, mut answer) = ConflictQuestion::new(
+                1,
+                entry(&dir, "a", EntryKind::File, 1),
+                entry(&dir, "a", EntryKind::File, 2),
+            );
+            app.on_msg(Msg::Job(JobEvent::Conflict(Box::new(q))));
+            app.handle_key(key(KeyCode::Down)); // not a valid answer: ignored, question stays
+            assert_eq!(app.questions.len(), 1);
+            app.handle_key(key(KeyCode::Char(c)));
+            assert!(app.questions.is_empty());
+            assert_eq!(
+                answer.try_recv().unwrap(),
+                ConflictAnswer {
+                    action,
+                    apply_to_all: all
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn error_keys_answer_the_job() {
+        for (code, expected) in [
+            (KeyCode::Char('r'), ErrorAnswer::Retry),
+            (KeyCode::Char('s'), ErrorAnswer::Skip),
+            (KeyCode::Char('a'), ErrorAnswer::SkipAll),
+            (KeyCode::Esc, ErrorAnswer::Cancel),
+        ] {
+            let mut app = loaded_app();
+            let (q, mut answer) = ErrorQuestion::new(1, Error::InvalidOperation("boom".into()));
+            app.on_msg(Msg::Job(JobEvent::Error(q)));
+            app.handle_key(key(code));
+            assert_eq!(answer.try_recv().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn ctrl_j_manages_jobs() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('j')));
+        assert_eq!(app.focus, Focus::Panels, "no jobs, nothing to focus");
+
+        running_job(&mut app, 7);
+        running_job(&mut app, 8);
+        app.handle_key(ctrl(KeyCode::Char('j')));
+        assert_eq!(app.focus, Focus::Jobs);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            app.take_requests(),
+            [Request::Job {
+                id: 8,
+                action: JobAction::Pause
+            }]
+        );
+        let paused = Progress {
+            paused: true,
+            ..Default::default()
+        };
+        app.on_msg(Msg::JobProgress {
+            id: 8,
+            progress: paused,
+        });
+        app.handle_key(key(KeyCode::Char('p')));
+        app.handle_key(key(KeyCode::Char('c')));
+        assert_eq!(
+            app.take_requests(),
+            [
+                Request::Job {
+                    id: 8,
+                    action: JobAction::Resume
+                },
+                Request::Job {
+                    id: 8,
+                    action: JobAction::Cancel
+                }
+            ]
+        );
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.focus, Focus::Panels);
+    }
+
+    #[test]
+    fn finished_job_reports_and_reloads_both_panels() {
+        let mut app = loaded_app();
+        running_job(&mut app, 3);
+        let (q, _answer) = ErrorQuestion::new(3, Error::InvalidOperation("old".into()));
+        app.on_msg(Msg::Job(JobEvent::Error(q)));
+        app.on_msg(Msg::Job(JobEvent::Finished(JobReport {
+            job: 3,
+            title: "Copy a → b".into(),
+            outcome: Outcome::Completed,
+            items: 2,
+            bytes: 2048,
+            skipped: 1,
+            elapsed: std::time::Duration::from_millis(1500),
+        })));
+        assert!(app.jobs.is_empty());
+        assert!(
+            app.questions.is_empty(),
+            "questions of a finished job are dropped"
+        );
+        let Some(Status::Info(text)) = &app.status else {
+            panic!()
+        };
+        assert_eq!(text, "Done: Copy a → b (2 items, 2.0K) in 1.5s, 1 skipped");
+
+        let reloaded: Vec<usize> = app
+            .take_requests()
+            .iter()
+            .filter_map(|r| match r {
+                Request::Load { panel, .. } => Some(*panel),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reloaded, [0, 1]);
+
+        // One item and no bytes read naturally too.
+        app.on_msg(Msg::Job(JobEvent::Finished(JobReport {
+            job: 4,
+            title: "Trash x".into(),
+            outcome: Outcome::Completed,
+            items: 1,
+            bytes: 0,
+            skipped: 0,
+            elapsed: std::time::Duration::ZERO,
+        })));
+        assert!(
+            matches!(&app.status, Some(Status::Info(t)) if t == "Done: Trash x (1 item, 0 B) in 0.0s")
+        );
+    }
+
+    #[test]
+    fn quitting_with_running_jobs_needs_confirmation() {
+        let mut app = loaded_app();
+        running_job(&mut app, 1);
+        app.handle_key(key(KeyCode::F(10)));
+        assert!(!app.should_quit);
+        assert!(matches!(app.status, Some(Status::Error(_))));
+        app.handle_key(key(KeyCode::F(10)));
+        assert!(app.should_quit);
     }
 
     #[test]

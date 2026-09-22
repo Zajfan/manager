@@ -23,6 +23,24 @@ pub fn size(bytes: u64) -> String {
     unreachable!("u64 can't exceed 16 EiB")
 }
 
+/// Like [`size`], but says `B` for small sizes so a lone number isn't confusing in a sentence.
+pub fn size_with_unit(bytes: u64) -> String {
+    if bytes < 1000 {
+        format!("{bytes} B")
+    } else {
+        size(bytes)
+    }
+}
+
+/// `1 file`, `2 files`.
+pub fn count(n: u64, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
 /// Local time as `2026-09-22 14:03`, or blank when unknown.
 pub fn date(time: Option<SystemTime>) -> String {
     time.map(|t| {
@@ -54,6 +72,14 @@ mod tests {
             assert_eq!(size(bytes), expected, "{bytes} bytes");
             assert!(size(bytes).len() <= 7);
         }
+    }
+
+    #[test]
+    fn words() {
+        assert_eq!(count(1, "item"), "1 item");
+        assert_eq!(count(0, "item"), "0 items");
+        assert_eq!(size_with_unit(3), "3 B");
+        assert_eq!(size_with_unit(2048), "2.0K");
     }
 
     #[test]

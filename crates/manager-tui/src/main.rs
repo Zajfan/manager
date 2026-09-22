@@ -7,17 +7,20 @@ mod app;
 mod format;
 mod ui;
 
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Sender};
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
 
+use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
 use manager_core::{LocalFs, VPath, Vfs};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use app::{App, Msg, Request};
+use app::{App, JobAction, Msg, Request};
 
 const HELP: &str = "\
 manager - a dual-pane file manager
@@ -30,6 +33,10 @@ KEYS:
     Enter / Backspace               open folder / go up
     Tab                             switch panel
     Insert or Space                 mark
+    F5 / F6                         copy / move (to the other panel, or type a path)
+    F8 or Delete                    move to trash
+    Shift+F8 or Shift+Delete        delete permanently
+    Ctrl+J                          manage running jobs (P pause/resume, C cancel)
     Ctrl+F3/F4/F5/F6                sort by name/ext/date/size (again: reverse)
     Alt+H or Alt+.                  show/hide hidden files
     Ctrl+R                          reload
@@ -106,15 +113,16 @@ fn expand_tilde(arg: &str) -> String {
 }
 
 fn run(terminal: &mut DefaultTerminal, runtime: &Runtime, mut app: App) -> std::io::Result<()> {
-    let vfs: Arc<dyn Vfs> = Arc::new(LocalFs::new());
-    let (tx, rx) = mpsc::channel();
+    let mut executor = Executor::new(runtime);
 
     loop {
         for request in app.take_requests() {
-            execute(request, &vfs, runtime, tx.clone());
+            executor.execute(request, &mut app);
         }
+        executor.feed(&mut app);
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
         if app.should_quit {
+            executor.shutdown();
             return Ok(());
         }
 
@@ -124,36 +132,124 @@ fn run(terminal: &mut DefaultTerminal, runtime: &Runtime, mut app: App) -> std::
         {
             app.handle_key(key);
         }
-        while let Ok(msg) = rx.try_recv() {
-            app.on_msg(msg);
-        }
     }
 }
 
-/// Runs a request on the tokio thread pool and posts the result back to the UI loop.
-fn execute(request: Request, vfs: &Arc<dyn Vfs>, runtime: &Runtime, tx: Sender<Msg>) {
-    let vfs = Arc::clone(vfs);
-    runtime.spawn(async move {
-        let msg = match request {
+/// Does the work the [`App`] asks for, on the tokio thread pool, and feeds the
+/// results back to it.
+struct Executor<'rt> {
+    runtime: &'rt Runtime,
+    vfs: Arc<dyn Vfs>,
+    msg_tx: Sender<Msg>,
+    msg_rx: Receiver<Msg>,
+    job_tx: UnboundedSender<JobEvent>,
+    job_rx: UnboundedReceiver<JobEvent>,
+    jobs: HashMap<JobId, JobHandle>,
+}
+
+impl<'rt> Executor<'rt> {
+    fn new(runtime: &'rt Runtime) -> Self {
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (job_tx, job_rx) = unbounded_channel();
+        Executor {
+            runtime,
+            vfs: Arc::new(LocalFs::new()),
+            msg_tx,
+            msg_rx,
+            job_tx,
+            job_rx,
+            jobs: HashMap::new(),
+        }
+    }
+
+    fn execute(&mut self, request: Request, app: &mut App) {
+        match request {
             Request::Load {
                 panel,
                 id,
                 path,
                 focus,
-            } => Msg::Loaded {
+            } => self.spawn(async move |vfs| Msg::Loaded {
                 panel,
                 id,
                 result: vfs.list(&path).await,
                 path,
                 focus,
-            },
-            Request::CreateDir { panel, path } => Msg::DirCreated {
+            }),
+            Request::CreateDir { panel, path } => self.spawn(async move |vfs| Msg::DirCreated {
                 panel,
                 result: vfs.create_dir(&path).await,
                 path,
-            },
-        };
-        // If the UI has already quit, nobody is listening; that's fine.
-        let _ = tx.send(msg);
-    });
+            }),
+            Request::StartJob(spec) => {
+                let _inside_runtime = self.runtime.enter();
+                let handle = jobs::start(Arc::clone(&self.vfs), spec, self.job_tx.clone());
+                app.on_msg(Msg::JobStarted {
+                    id: handle.id(),
+                    title: handle.title().to_string(),
+                });
+                self.jobs.insert(handle.id(), handle);
+            }
+            Request::Job { id, action } => {
+                if let Some(handle) = self.jobs.get(&id) {
+                    match action {
+                        JobAction::Pause => handle.pause(),
+                        JobAction::Resume => handle.resume(),
+                        JobAction::Cancel => handle.cancel(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs one piece of disk work in the background and posts its result.
+    fn spawn<F, Fut>(&self, work: F)
+    where
+        F: FnOnce(Arc<dyn Vfs>) -> Fut + Send + 'static,
+        Fut: Future<Output = Msg> + Send,
+    {
+        let vfs = Arc::clone(&self.vfs);
+        let tx = self.msg_tx.clone();
+        self.runtime.spawn(async move {
+            // If the UI has already quit, nobody is listening; that's fine.
+            let _ = tx.send(work(vfs).await);
+        });
+    }
+
+    /// Hands everything that arrived since the last frame to the app.
+    fn feed(&mut self, app: &mut App) {
+        while let Ok(msg) = self.msg_rx.try_recv() {
+            app.on_msg(msg);
+        }
+        for (&id, handle) in &self.jobs {
+            app.on_msg(Msg::JobProgress {
+                id,
+                progress: handle.progress(),
+            });
+        }
+        while let Ok(event) = self.job_rx.try_recv() {
+            if let JobEvent::Finished(report) = &event {
+                self.jobs.remove(&report.job);
+            }
+            app.on_msg(Msg::Job(event));
+        }
+    }
+
+    /// Cancels running jobs and gives them a moment to clean up their temp files.
+    fn shutdown(&mut self) {
+        for handle in self.jobs.values() {
+            handle.cancel();
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !self.jobs.is_empty() && Instant::now() < deadline {
+            match self.job_rx.try_recv() {
+                Ok(JobEvent::Finished(report)) => {
+                    self.jobs.remove(&report.job);
+                }
+                // Unanswered questions are dropped, which the job reads as "cancel".
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
 }

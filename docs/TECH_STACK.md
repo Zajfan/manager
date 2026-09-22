@@ -128,6 +128,22 @@ zip:file:///home/me/photos.zip!/2024/img.jpg          ← inside a ZIP
 tar:zip:sftp://host/backup.zip!/inner.tar!/etc/hosts  ← TAR inside a ZIP on a server
 ```
 
+### The job engine
+
+Copy, move and delete run as background **jobs** (`manager-core/src/jobs/`), so every frontend
+gets the same behaviour. A job talks to the UI through three channels: a *control* channel
+(pause/resume/cancel), a *progress* channel (always the latest numbers), and an *events* channel
+for questions that need a human ("file exists", "permission denied"). Each question carries its
+own reply channel, so the job simply waits until the UI answers.
+
+Safety rules:
+- Files are written to a hidden `.name.part` file and renamed into place when complete, so a
+  cancel or crash never leaves a half-written file under the real name.
+- A move on the same disk is a rename (instant). Across disks it copies, then deletes the source,
+  but only the parts that were fully copied.
+- Symlinks are copied as links, never followed. Folders are never copied into themselves.
+- F8 uses the system trash. Permanent delete is a separate key and asks with a red warning.
+
 Backends: `LocalFs`, `ZipFs`, `TarFs`, `SftpFs`, `OpenDalFs` (cloud), `AndroidSafFs`, plugin-provided FS.
 A copy from a ZIP on an SFTP server into Google Drive is then just "read stream from A → write stream to B".
 
@@ -172,8 +188,8 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 1. ✅ **Core basics** – `LocalFs`, listing, sorting, metadata. Unit tests with temp dirs.
 2. ✅ **TUI v0** – dual pane, navigate, mark, sort, hidden files, F7 mkdir. Plus `VPath`, the
    path type that can address files on servers and inside archives.
-3. **Job engine** – background copy/move/delete queue with progress, pause, cancel, conflict prompts.
-   This is where F5 copy / F6 move / F8 delete land, so they're built once, the right way.
+3. ✅ **Job engine** – background copy/move/delete with progress, pause, cancel, conflict and
+   error prompts. F5 copy / F6 move / F8 trash / Shift+F8 delete in the TUI.
 4. **Watching** – live-refresh panes with `notify`.
 5. **Archives as folders** – enter a `.zip`/`.tar.gz` like a directory.
 6. **GUI v0** – Tauri desktop shell reusing the same core.

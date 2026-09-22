@@ -1,21 +1,29 @@
 //! Drawing the screen. Reads the [`App`] state, never changes what it means.
 
-use manager_core::{EntryKind, SortKey, SortOrder};
+use manager_core::jobs::{JobId, Phase};
+use manager_core::{Entry, EntryKind, SortKey, SortOrder, VPath};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row as TableRow, Table};
 
-use crate::app::{App, Dialog, Panel, Row, Status};
+use crate::app::{App, Dialog, Focus, JobView, Panel, Question, Row, Status};
 use crate::format;
 
 /// Below this width the date column is dropped (phones in Termux, split terminals).
 const NARROW: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [panels, status, keys] = Layout::vertical([
+    // The jobs box only appears while something is running.
+    let jobs_height = if app.jobs.is_empty() {
+        0
+    } else {
+        app.jobs.len().min(4) as u16 + 2
+    };
+    let [panels, jobs, status, keys] = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(jobs_height),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -24,13 +32,36 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(panels);
 
     let active = app.active;
-    draw_panel(frame, left, &mut app.panels[0], active == 0);
-    draw_panel(frame, right, &mut app.panels[1], active == 1);
+    let panels_focused = app.focus == Focus::Panels;
+    draw_panel(
+        frame,
+        left,
+        &mut app.panels[0],
+        panels_focused && active == 0,
+    );
+    draw_panel(
+        frame,
+        right,
+        &mut app.panels[1],
+        panels_focused && active == 1,
+    );
+    if !app.jobs.is_empty() {
+        draw_jobs(frame, jobs, app);
+    }
     draw_status(frame, status, app);
     draw_keys(frame, keys);
 
-    if let Some(Dialog::MkDir { input }) = &app.dialog {
-        draw_mkdir(frame, input);
+    // At most one popup: an open dialog first, then the oldest question.
+    if let Some(dialog) = &app.dialog {
+        draw_dialog(frame, dialog);
+    } else if let Some(question) = app.questions.front() {
+        let title = app
+            .jobs
+            .iter()
+            .find(|j| Some(j.id) == question_job(question))
+            .map(|j| j.title.as_str())
+            .unwrap_or_default();
+        draw_question(frame, question, title);
     }
 }
 
@@ -168,18 +199,10 @@ fn summary(panel: &Panel) -> String {
     let bytes: u64 = entries.iter().map(|e| e.size).sum();
     format!(
         " {}, {}, {} ",
-        plural(dirs, "dir"),
-        plural(files, "file"),
+        format::count(dirs as u64, "dir"),
+        format::count(files as u64, "file"),
         format::size(bytes)
     )
-}
-
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 {
-        format!("1 {word}")
-    } else {
-        format!("{n} {word}s")
-    }
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
@@ -211,10 +234,10 @@ fn draw_keys(frame: &mut Frame, area: Rect) {
     const KEYS: [(&str, &str, bool); 7] = [
         ("F3", "View", false),
         ("F4", "Edit", false),
-        ("F5", "Copy", false),
-        ("F6", "Move", false),
+        ("F5", "Copy", true),
+        ("F6", "Move", true),
         ("F7", "MkDir", true),
-        ("F8", "Delete", false),
+        ("F8", "Trash", true),
         ("F10", "Quit", true),
     ];
     let mut spans = Vec::new();
@@ -230,22 +253,201 @@ fn draw_keys(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_mkdir(frame: &mut Frame, input: &str) {
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).min(60);
-    let popup = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + area.height.saturating_sub(3) / 2,
-        width,
-        height: 3.min(area.height),
+fn draw_jobs(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Jobs;
+    let hint = if focused {
+        " ↑↓ select · P pause/resume · C cancel · Esc back "
+    } else {
+        " Ctrl+J manage "
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Yellow))
-        .title(" New folder ")
-        .title_bottom(Line::from(" Enter create · Esc cancel ").right_aligned());
+        .border_style(Style::new().fg(if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        }))
+        .title(Line::from(" Jobs ").bold())
+        .title_bottom(Line::from(hint).right_aligned());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Keep the selected job visible when there are more jobs than lines.
+    let visible = usize::from(inner.height).max(1);
+    let first = app.job_cursor.saturating_sub(visible - 1);
+    let lines: Vec<Line> = app
+        .jobs
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .map(|(i, job)| {
+            let line = job_line(job, inner.width);
+            if focused && i == app.job_cursor {
+                line.reversed()
+            } else {
+                line
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// `Copy 3 items → /tmp  ████████░░░░  62%  45M/s  video.mp4`
+fn job_line(job: &JobView, width: u16) -> Line<'static> {
+    let p = &job.progress;
+    let bar_width = if width > 90 { 20 } else { 10 };
+    let filled = (p.fraction() * bar_width as f64).round() as usize;
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width - filled));
+
+    let state = if p.paused {
+        Span::raw(" paused ").fg(Color::Black).bg(Color::Yellow)
+    } else {
+        match p.phase {
+            Phase::Scanning => {
+                Span::raw(format!(" counting… {} items ", p.total_items)).fg(Color::Gray)
+            }
+            _ => Span::raw(format!(" {}/s ", format::size(p.bytes_per_second() as u64))),
+        }
+    };
+    let current = p
+        .current
+        .as_ref()
+        .and_then(VPath::file_name)
+        .unwrap_or_default();
+
+    Line::from(vec![
+        Span::raw(format!("{} ", job.title)).bold(),
+        Span::raw(bar).fg(Color::Cyan),
+        Span::raw(format!(" {:>3.0}%", p.fraction() * 100.0)),
+        state,
+        Span::raw(current).fg(Color::Gray),
+    ])
+}
+
+fn question_job(question: &Question) -> Option<JobId> {
+    match question {
+        Question::Conflict(q) => Some(q.job),
+        Question::Error(q) => Some(q.job),
+    }
+}
+
+fn draw_dialog(frame: &mut Frame, dialog: &Dialog) {
+    match dialog {
+        Dialog::MkDir { input } => popup(
+            frame,
+            " New folder ",
+            vec![Line::from(format!("{input}█"))],
+            " Enter create · Esc cancel ",
+            Color::Yellow,
+        ),
+        Dialog::Transfer {
+            is_move,
+            sources,
+            input,
+        } => {
+            let verb = if *is_move { "Move" } else { "Copy" };
+            let title = format!(" {verb} {} to ", describe(sources));
+            popup(
+                frame,
+                &title,
+                vec![Line::from(format!("{input}█"))],
+                " Enter start · Esc cancel ",
+                Color::Yellow,
+            )
+        }
+        Dialog::Delete { targets, permanent } => {
+            let (title, text, color) = if *permanent {
+                (
+                    " Delete permanently ",
+                    format!(
+                        "Delete {} forever? This can't be undone.",
+                        describe(targets)
+                    ),
+                    Color::Red,
+                )
+            } else {
+                (
+                    " Move to trash ",
+                    format!("Move {} to the trash?", describe(targets)),
+                    Color::Yellow,
+                )
+            };
+            popup(
+                frame,
+                title,
+                vec![Line::from(text)],
+                " Enter/Y yes · Esc/N no ",
+                color,
+            )
+        }
+    }
+}
+
+fn draw_question(frame: &mut Frame, question: &Question, job_title: &str) {
+    match question {
+        Question::Conflict(q) => {
+            let describe = |label: &str, e: &Entry| {
+                let size = if e.kind.is_dir_like() {
+                    "<DIR>".to_string()
+                } else {
+                    format::size(e.size)
+                };
+                Line::from(format!("{label:<9}{size:>8}  {}", format::date(e.modified)))
+            };
+            let lines = vec![
+                Line::from(job_title.to_string()).fg(Color::Gray),
+                Line::from(q.existing.path.to_string()).bold(),
+                Line::from("already exists."),
+                describe("New:", &q.source),
+                describe("Existing:", &q.existing),
+                Line::from(""),
+                Line::from("[O]verwrite  [U]pdate if older  [S]kip  [R]ename  [C]ancel job"),
+                Line::from("Shift+letter: same answer for all remaining conflicts").fg(Color::Gray),
+            ];
+            popup(frame, " File exists ", lines, "", Color::Yellow);
+        }
+        Question::Error(q) => {
+            let lines = vec![
+                Line::from(job_title.to_string()).fg(Color::Gray),
+                Line::from(q.error.to_string()).fg(Color::Red),
+                Line::from(""),
+                Line::from("[R]etry  [S]kip  Skip [A]ll  [C]ancel job"),
+            ];
+            popup(frame, " Problem ", lines, "", Color::Red);
+        }
+    }
+}
+
+/// `report.pdf` for one item, `3 items` for more.
+fn describe(paths: &[VPath]) -> String {
+    match paths {
+        [one] => one.file_name().unwrap_or_else(|| one.to_string()),
+        many => format!("{} items", many.len()),
+    }
+}
+
+/// A centered box drawn over everything else.
+fn popup(frame: &mut Frame, title: &str, lines: Vec<Line>, hint: &str, color: Color) {
+    let area = frame.area();
+    let longest = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let width = (longest.max(title.len() as u16) + 4)
+        .clamp(30, 90)
+        .min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(color))
+        .title(Line::from(title.to_string()).bold())
+        .title_bottom(Line::from(hint.to_string()).right_aligned());
     frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(format!("{input}█")).block(block), popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 #[cfg(test)]
@@ -288,6 +490,58 @@ mod tests {
         assert!(screen.contains("Size"), "{screen}");
         // Absurdly small terminals must not panic either.
         render(&mut app, 3, 2);
+    }
+
+    #[test]
+    fn running_jobs_show_progress() {
+        use manager_core::jobs::{Phase, Progress};
+        let mut app = loaded_app();
+        app.on_msg(crate::app::Msg::JobStarted {
+            id: 1,
+            title: "Copy big.iso → /tmp".into(),
+        });
+        app.on_msg(crate::app::Msg::JobProgress {
+            id: 1,
+            progress: Progress {
+                phase: Phase::Working,
+                total_bytes: 1000,
+                done_bytes: 500,
+                elapsed: std::time::Duration::from_secs(1),
+                ..Default::default()
+            },
+        });
+        let screen = render(&mut app, 120, 20);
+        assert!(screen.contains("Jobs"), "{screen}");
+        assert!(screen.contains("Copy big.iso → /tmp"), "{screen}");
+        assert!(screen.contains("50%"), "{screen}");
+        assert!(screen.contains("500/s"), "{screen}");
+        assert!(screen.contains("Ctrl+J"), "{screen}");
+    }
+
+    #[test]
+    fn conflict_question_is_drawn() {
+        use crate::app::tests::entry;
+        use manager_core::jobs::{ConflictQuestion, JobEvent};
+        let mut app = loaded_app();
+        let dir = crate::app::tests::vp("/tmp");
+        let (q, _answer) = ConflictQuestion::new(
+            1,
+            entry(&dir, "a.txt", EntryKind::File, 10),
+            entry(&dir, "a.txt", EntryKind::File, 20),
+        );
+        app.on_msg(crate::app::Msg::Job(JobEvent::Conflict(Box::new(q))));
+        let screen = render(&mut app, 100, 24);
+        assert!(screen.contains("File exists"), "{screen}");
+        assert!(screen.contains("[O]verwrite"), "{screen}");
+    }
+
+    #[test]
+    fn permanent_delete_warns() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT));
+        let screen = render(&mut app, 100, 20);
+        assert!(screen.contains("Delete b.txt forever?"), "{screen}");
     }
 
     #[test]
