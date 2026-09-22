@@ -4,9 +4,12 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 
 use crate::entry::LinkTarget;
-use crate::{Capabilities, Entry, EntryKind, Error, Permissions, Result, Vfs};
+use crate::{Capabilities, Entry, EntryKind, Error, Permissions, Result, VPath, Vfs};
 
 /// The backend for the local computer's disks, built on `std::fs`.
+///
+/// It only accepts plain local [`VPath`]s. Paths inside archives or on servers
+/// are handled by other backends.
 ///
 /// File system calls block the thread, so each operation runs on tokio's
 /// blocking thread pool to keep the UI responsive while a slow disk
@@ -35,15 +38,29 @@ impl Vfs for LocalFs {
         }
     }
 
-    async fn list(&self, path: &Path) -> Result<Vec<Entry>> {
-        let path = path.to_path_buf();
+    async fn list(&self, path: &VPath) -> Result<Vec<Entry>> {
+        let path = path.clone();
         run_blocking(move || list_dir(&path)).await
     }
 
-    async fn stat(&self, path: &Path) -> Result<Entry> {
-        let path = path.to_path_buf();
+    async fn stat(&self, path: &VPath) -> Result<Entry> {
+        let path = path.clone();
         run_blocking(move || stat_path(&path)).await
     }
+
+    async fn create_dir(&self, path: &VPath) -> Result<()> {
+        let path = path.clone();
+        run_blocking(move || fs::create_dir(native(&path)?).map_err(|e| Error::from_io(&path, e)))
+            .await
+    }
+}
+
+/// The OS path behind a [`VPath`], or an error if it isn't a plain local path.
+fn native(path: &VPath) -> Result<&Path> {
+    path.as_local().ok_or_else(|| Error::Unsupported {
+        backend: "local file system",
+        path: path.clone(),
+    })
 }
 
 async fn run_blocking<T, F>(f: F) -> Result<T>
@@ -56,8 +73,8 @@ where
         .map_err(|e| Error::Task(e.to_string()))?
 }
 
-fn list_dir(dir: &Path) -> Result<Vec<Entry>> {
-    let read_dir = fs::read_dir(dir).map_err(|e| Error::from_io(dir, e))?;
+fn list_dir(dir: &VPath) -> Result<Vec<Entry>> {
+    let read_dir = fs::read_dir(native(dir)?).map_err(|e| Error::from_io(dir, e))?;
 
     let mut entries = Vec::new();
     for item in read_dir {
@@ -76,9 +93,14 @@ fn list_dir(dir: &Path) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-fn stat_path(path: &Path) -> Result<Entry> {
-    let meta = fs::symlink_metadata(path).map_err(|e| Error::from_io(path, e))?;
-    Ok(build_entry(display_name(path), path.to_path_buf(), &meta))
+fn stat_path(path: &VPath) -> Result<Entry> {
+    let native = native(path)?;
+    let meta = fs::symlink_metadata(native).map_err(|e| Error::from_io(path, e))?;
+    Ok(build_entry(
+        display_name(native),
+        native.to_path_buf(),
+        &meta,
+    ))
 }
 
 /// `/home/me/notes.txt` → `notes.txt`; roots like `/` or `C:\` keep their full form.
@@ -126,7 +148,7 @@ fn build_entry(name: String, path: PathBuf, meta: &Metadata) -> Entry {
     Entry {
         hidden: is_hidden(&name, meta),
         name,
-        path,
+        path: VPath::from_local_absolute(path),
         kind,
         size,
         modified: meta.modified().ok(),
@@ -147,7 +169,7 @@ fn unreadable_entry(name: String, path: PathBuf, file_type: Option<fs::FileType>
     Entry {
         hidden: name.starts_with('.'),
         name,
-        path,
+        path: VPath::from_local_absolute(path),
         kind,
         size: 0,
         modified: None,

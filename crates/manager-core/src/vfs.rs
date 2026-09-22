@@ -1,8 +1,6 @@
-use std::path::Path;
-
 use async_trait::async_trait;
 
-use crate::{Entry, Result};
+use crate::{Entry, Result, VPath};
 
 /// What a backend is able to do. The UI uses this to grey out actions that
 /// don't make sense (you can't `chmod` a file inside a ZIP, for example).
@@ -21,7 +19,7 @@ pub struct Capabilities {
 /// exactly like a local folder later on.
 ///
 /// Methods are `async` because most future backends are network-based.
-/// Step 1 only needs reading; writing operations arrive with the job engine.
+/// Copy, move and delete arrive with the job engine (roadmap step 3).
 #[async_trait]
 pub trait Vfs: Send + Sync {
     /// A short human-readable name for this backend, e.g. `"local"`.
@@ -30,8 +28,11 @@ pub trait Vfs: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     /// Lists the direct children of `path` (not recursive, unsorted).
-    async fn list(&self, path: &Path) -> Result<Vec<Entry>>;
+    async fn list(&self, path: &VPath) -> Result<Vec<Entry>>;
 
     /// Metadata for a single path.
-    async fn stat(&self, path: &Path) -> Result<Entry>;
+    async fn stat(&self, path: &VPath) -> Result<Entry>;
+
+    /// Creates a single new folder. Fails if it already exists or the parent is missing.
+    async fn create_dir(&self, path: &VPath) -> Result<()>;
 }

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use crate::VPath;
+
 /// What kind of thing a directory entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -49,8 +51,8 @@ pub struct Permissions {
 pub struct Entry {
     /// Just the file name, e.g. `report.pdf`.
     pub name: String,
-    /// Full path to the entry.
-    pub path: PathBuf,
+    /// Full address of the entry.
+    pub path: VPath,
     pub kind: EntryKind,
     /// Size in bytes. For a symlink this is the size of the *target* when it can be resolved.
     /// Folders report 0 (calculating folder sizes is a separate, slow operation).

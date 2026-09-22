@@ -2,14 +2,15 @@
 //!
 //! cargo run -p manager-core --example ls -- [PATH] [--sort name|ext|size|date] [--desc] [--all]
 
-use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-use manager_core::{Entry, EntryKind, LocalFs, SortKey, SortOrder, SortSpec, Vfs, sort_entries};
+use manager_core::{
+    Entry, EntryKind, LocalFs, SortKey, SortOrder, SortSpec, VPath, Vfs, sort_entries,
+};
 
 #[tokio::main]
 async fn main() {
-    let mut path = PathBuf::from(".");
+    let mut path = String::from(".");
     let mut spec = SortSpec::default();
     let mut show_hidden = false;
 
@@ -26,11 +27,15 @@ async fn main() {
                     _ => SortKey::Name,
                 }
             }
-            other => path = PathBuf::from(other),
+            other => path = other.to_string(),
         }
     }
 
-    let mut entries = match LocalFs.list(&path).await {
+    let entries = match VPath::parse(&path) {
+        Ok(path) => LocalFs.list(&path).await,
+        Err(err) => Err(err),
+    };
+    let mut entries = match entries {
         Ok(entries) => entries,
         Err(err) => {
             eprintln!("error: {err}");

@@ -5,16 +5,20 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use manager_core::{
-    Entry, EntryKind, Error, LocalFs, SortKey, SortOrder, SortSpec, Vfs, sort_entries,
+    Entry, EntryKind, Error, LocalFs, SortKey, SortOrder, SortSpec, VPath, Vfs, sort_entries,
 };
 use tempfile::TempDir;
+
+fn vp(path: impl AsRef<Path>) -> VPath {
+    VPath::local(path).unwrap()
+}
 
 fn write(dir: &Path, name: &str, bytes: usize) {
     fs::write(dir.join(name), vec![b'x'; bytes]).unwrap();
 }
 
 async fn list_sorted(dir: &Path, spec: SortSpec) -> Vec<Entry> {
-    let mut entries = LocalFs.list(dir).await.unwrap();
+    let mut entries = LocalFs.list(&vp(dir)).await.unwrap();
     sort_entries(&mut entries, spec);
     entries
 }
@@ -33,13 +37,17 @@ async fn lists_files_and_folders_with_metadata() {
     write(tmp.path(), "hello.txt", 5);
     fs::create_dir(tmp.path().join("photos")).unwrap();
 
-    let entries = LocalFs.list(tmp.path()).await.unwrap();
+    let entries = LocalFs.list(&vp(tmp.path())).await.unwrap();
     assert_eq!(entries.len(), 2);
 
     let file = find(&entries, "hello.txt");
     assert_eq!(file.kind, EntryKind::File);
     assert_eq!(file.size, 5);
-    assert_eq!(file.path, tmp.path().join("hello.txt"));
+    assert_eq!(
+        file.path.as_local(),
+        Some(tmp.path().join("hello.txt").as_path())
+    );
+    assert_eq!(file.path, vp(tmp.path()).join("hello.txt").unwrap());
     assert_eq!(file.extension(), Some("txt"));
     assert!(file.modified.is_some());
 
@@ -52,13 +60,16 @@ async fn lists_files_and_folders_with_metadata() {
 #[tokio::test]
 async fn empty_folder_lists_nothing() {
     let tmp = TempDir::new().unwrap();
-    assert!(LocalFs.list(tmp.path()).await.unwrap().is_empty());
+    assert!(LocalFs.list(&vp(tmp.path())).await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn missing_folder_is_not_found() {
     let tmp = TempDir::new().unwrap();
-    let err = LocalFs.list(&tmp.path().join("nope")).await.unwrap_err();
+    let err = LocalFs
+        .list(&vp(tmp.path().join("nope")))
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
 }
 
@@ -67,7 +78,7 @@ async fn listing_a_file_is_an_error() {
     let tmp = TempDir::new().unwrap();
     write(tmp.path(), "file.txt", 1);
     let err = LocalFs
-        .list(&tmp.path().join("file.txt"))
+        .list(&vp(tmp.path().join("file.txt")))
         .await
         .unwrap_err();
     assert!(
@@ -81,12 +92,12 @@ async fn stat_single_file_and_root() {
     let tmp = TempDir::new().unwrap();
     write(tmp.path(), "a.bin", 42);
 
-    let entry = LocalFs.stat(&tmp.path().join("a.bin")).await.unwrap();
+    let entry = LocalFs.stat(&vp(tmp.path().join("a.bin"))).await.unwrap();
     assert_eq!(entry.name, "a.bin");
     assert_eq!(entry.size, 42);
 
     let root = if cfg!(windows) { "C:\\" } else { "/" };
-    let root_entry = LocalFs.stat(Path::new(root)).await.unwrap();
+    let root_entry = LocalFs.stat(&vp(Path::new(root))).await.unwrap();
     assert_eq!(root_entry.kind, EntryKind::Dir);
     assert_eq!(root_entry.name, root);
 }
@@ -101,7 +112,7 @@ async fn names_and_extensions() {
     if cfg!(not(windows)) {
         write(tmp.path(), "trailing.", 1);
     }
-    let entries = LocalFs.list(tmp.path()).await.unwrap();
+    let entries = LocalFs.list(&vp(tmp.path())).await.unwrap();
 
     assert_eq!(find(&entries, "archive.tar.gz").extension(), Some("gz"));
     assert_eq!(find(&entries, "archive.tar.gz").stem(), "archive.tar");
@@ -214,7 +225,7 @@ async fn dotfiles_are_hidden_on_unix() {
     let tmp = TempDir::new().unwrap();
     write(tmp.path(), ".secret", 1);
     write(tmp.path(), "visible", 1);
-    let entries = LocalFs.list(tmp.path()).await.unwrap();
+    let entries = LocalFs.list(&vp(tmp.path())).await.unwrap();
     assert!(find(&entries, ".secret").hidden);
     assert!(!find(&entries, "visible").hidden);
 }
@@ -228,7 +239,7 @@ async fn unix_permissions_are_reported() {
     let path = tmp.path().join("script.sh");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o555)).unwrap();
 
-    let entry = LocalFs.stat(&path).await.unwrap();
+    let entry = LocalFs.stat(&vp(path)).await.unwrap();
     assert_eq!(entry.permissions.unix_mode, Some(0o555));
     assert!(entry.permissions.readonly);
 }
@@ -246,7 +257,7 @@ async fn symlinks_report_their_target() {
     symlink(tmp.path().join("real_dir"), tmp.path().join("link_to_dir")).unwrap();
     symlink(tmp.path().join("gone"), tmp.path().join("broken")).unwrap();
 
-    let entries = LocalFs.list(tmp.path()).await.unwrap();
+    let entries = LocalFs.list(&vp(tmp.path())).await.unwrap();
 
     let to_file = find(&entries, "link_to_file");
     assert_eq!(
@@ -283,4 +294,29 @@ async fn symlinks_report_their_target() {
             "real.txt"
         ]
     );
+}
+
+#[tokio::test]
+async fn create_dir_makes_a_folder_once() {
+    let tmp = TempDir::new().unwrap();
+    let new_dir = vp(tmp.path()).join("new folder").unwrap();
+
+    LocalFs.create_dir(&new_dir).await.unwrap();
+    assert!(tmp.path().join("new folder").is_dir());
+
+    let err = LocalFs.create_dir(&new_dir).await.unwrap_err();
+    assert!(matches!(err, Error::AlreadyExists(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn local_fs_refuses_paths_it_cannot_open() {
+    let tmp = TempDir::new().unwrap();
+    write(tmp.path(), "photos.zip", 1);
+    let inside_zip = vp(tmp.path().join("photos.zip")).enter("zip").unwrap();
+    let remote = VPath::parse("sftp://me@host/home").unwrap();
+
+    for path in [inside_zip, remote] {
+        let err = LocalFs.list(&path).await.unwrap_err();
+        assert!(matches!(err, Error::Unsupported { .. }), "got {err:?}");
+    }
 }

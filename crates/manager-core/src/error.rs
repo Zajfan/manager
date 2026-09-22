@@ -1,5 +1,6 @@
 use std::io;
-use std::path::PathBuf;
+
+use crate::VPath;
 
 /// Everything that can go wrong inside the core.
 ///
@@ -8,17 +9,28 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("not found: {0}")]
-    NotFound(PathBuf),
+    NotFound(VPath),
 
     #[error("permission denied: {0}")]
-    PermissionDenied(PathBuf),
+    PermissionDenied(VPath),
 
     #[error("not a directory: {0}")]
-    NotADirectory(PathBuf),
+    NotADirectory(VPath),
+
+    #[error("already exists: {0}")]
+    AlreadyExists(VPath),
+
+    /// Text that can't be turned into a valid [`VPath`] or file name.
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
+
+    /// The backend can't handle this kind of path (e.g. `LocalFs` asked to open an SFTP path).
+    #[error("{backend} can't open {path}")]
+    Unsupported { backend: &'static str, path: VPath },
 
     #[error("I/O error on {path}: {source}")]
     Io {
-        path: PathBuf,
+        path: VPath,
         #[source]
         source: io::Error,
     },
@@ -32,12 +44,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// Wraps an [`io::Error`] and remembers which path it happened on.
-    pub fn from_io(path: impl Into<PathBuf>, source: io::Error) -> Self {
-        let path = path.into();
+    pub fn from_io(path: &VPath, source: io::Error) -> Self {
+        let path = path.clone();
         match source.kind() {
             io::ErrorKind::NotFound => Error::NotFound(path),
             io::ErrorKind::PermissionDenied => Error::PermissionDenied(path),
             io::ErrorKind::NotADirectory => Error::NotADirectory(path),
+            io::ErrorKind::AlreadyExists => Error::AlreadyExists(path),
             _ => Error::Io { path, source },
         }
     }
