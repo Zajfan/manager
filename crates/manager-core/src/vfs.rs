@@ -72,8 +72,11 @@ pub trait Vfs: Send + Sync {
 
     /// Reports changes in `dir` to `sink` until the returned handle is dropped.
     ///
-    /// Shallow: only the folder's own contents count, not what happens inside
-    /// its subfolders. Backends that can't watch return an error, which the UI
+    /// Shallow: it asks about the folder's own contents, not what happens
+    /// inside its subfolders. Some systems report more than that anyway
+    /// (macOS's FSEvents coalesces events up to a parent folder), so treat a
+    /// report as "look at this folder again", never as proof something in it
+    /// really changed. Backends that can't watch return an error, which the UI
     /// treats as "no live refresh here" rather than as a failure.
     async fn watch(&self, dir: &VPath, sink: WatchSink) -> Result<WatchHandle> {
         let _ = sink;

@@ -110,6 +110,22 @@ async fn dropping_the_handle_stops_the_watch() {
 }
 
 #[tokio::test]
+async fn a_change_in_the_folder_is_reported_on_every_platform() {
+    // The one promise every backend has to keep: touch the folder a panel is
+    // showing and the panel hears about it. Whatever else an operating system
+    // chooses to tell us on top is its own business.
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("sub")).unwrap();
+    let dir = vp(tmp.path());
+    let (sink, rx) = sink();
+
+    let _watch = LocalFs.watch(&dir, sink).await.unwrap();
+    fs::write(tmp.path().join("right-here.txt"), b"hello").unwrap();
+
+    assert_eq!(wait(&rx), dir);
+}
+
+#[tokio::test]
 async fn watching_a_folder_that_is_not_there_fails() {
     let tmp = TempDir::new().unwrap();
     let missing = vp(tmp.path().join("nope"));
@@ -122,6 +138,15 @@ async fn watching_a_folder_that_is_not_there_fails() {
     );
 }
 
+// The two tests below pin down that *nothing* is reported. That holds where
+// the operating system can watch one folder without its subfolders: inotify on
+// Linux and `ReadDirectoryChangesW` on Windows. macOS has only FSEvents, which
+// is recursive by nature and coalesces events up to a parent folder, so it
+// reports more than we asked for. That costs an extra directory listing, which
+// `Coalescer` already rate-limits — it doesn't make anything wrong — so the
+// strict version is checked where it's real rather than watered down for
+// everyone.
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn reading_a_file_is_not_a_change() {
     let tmp = TempDir::new().unwrap();
@@ -137,6 +162,7 @@ async fn reading_a_file_is_not_a_change() {
     expect_quiet(&rx);
 }
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn changes_deep_inside_a_subfolder_are_not_reported() {
     let tmp = TempDir::new().unwrap();
