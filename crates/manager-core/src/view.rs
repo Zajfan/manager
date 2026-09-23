@@ -90,7 +90,8 @@ fn strip_mark(bytes: &[u8], encoding: Encoding) -> &[u8] {
 
 fn utf16(bytes: &[u8], order: fn([u8; 2]) -> u16) -> String {
     // A trailing odd byte is dropped: half a character can't be shown.
-    let units = bytes.chunks_exact(2).map(|pair| order([pair[0], pair[1]]));
+    let (pairs, _odd_byte) = bytes.as_chunks::<2>();
+    let units = pairs.iter().map(|&pair| order(pair));
     char::decode_utf16(units)
         .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect()
