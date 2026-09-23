@@ -32,6 +32,11 @@ pub enum Error {
     #[error("couldn't move {path} to the trash: {message}")]
     Trash { path: VPath, message: Box<str> },
 
+    /// An archive couldn't be opened or read: truncated, encrypted, or in a
+    /// format we don't support.
+    #[error("can't read the archive {path}: {message}")]
+    Archive { path: VPath, message: Box<str> },
+
     /// The folder exists but can't be watched for changes, e.g. because the
     /// system ran out of watch slots. The panel still works; it just won't
     /// refresh itself.

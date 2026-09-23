@@ -192,7 +192,9 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    error prompts. F5 copy / F6 move / F8 trash / Shift+F8 delete in the TUI.
 4. ✅ **Watching** – panels refresh themselves when something else changes the
    folder, with bursts coalesced so a big copy doesn't cause a reload per file.
-5. **Archives as folders** – enter a `.zip`/`.tar.gz` like a directory.
+5. ✅ **Archives as folders** – enter a `.zip`, `.tar` or `.tar.gz` like a directory, and
+   copy out of it with the ordinary job engine. Read-only; 7z, RAR, bzip2/xz tars and
+   archives nested inside archives are still to come.
 6. **GUI v0** – Tauri desktop shell reusing the same core.
 7. **Previews / quick view** – text, images, PDF, media.
 8. **Remote** – SFTP, then cloud via OpenDAL.

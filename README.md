@@ -3,9 +3,9 @@
 A Total Commander–style, dual-pane, cross-platform, open-source file manager that runs
 both **in the terminal** and as a **GUI app** on Windows, macOS, Linux, Android and iOS.
 
-Status: **early development**. The terminal version can browse folders, copy, move and
-delete files in the background, and keeps each panel up to date when something else
-changes the folder. See
+Status: **early development**. The terminal version can browse folders, look inside
+ZIP and TAR archives as if they were folders, copy, move and delete files in the
+background, and keeps each panel up to date when something else changes the folder. See
 [docs/TECH_STACK.md](docs/TECH_STACK.md) for the stack and roadmap.
 
 **Stack:** Rust core · Ratatui TUI · Tauri 2 GUI (desktop + mobile, planned) · WASM plugins (planned).
@@ -21,7 +21,7 @@ cargo test --workspace            # run all tests
 | Keys | Action |
 |---|---|
 | ↑ ↓ PgUp PgDn Home End | Move |
-| Enter / Backspace | Open folder / go up |
+| Enter / Backspace | Open folder or archive / go up |
 | Tab | Switch panel |
 | Insert or Space | Mark |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
@@ -49,9 +49,21 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-core/src/sort.rs` | Folders-first, natural (`file2` < `file10`) sorting |
 | `crates/manager-core/src/jobs/` | The job engine: background copy/move/delete with progress, pause, cancel and questions |
 | `crates/manager-core/src/watch.rs` | Watching a folder for changes, and coalescing bursts of them into a few refreshes |
+| `crates/manager-core/src/archive/` | Reading ZIP and TAR archives as folders: the tree index, the format readers, and the `Vfs` over them |
+| `crates/manager-core/src/router.rs` | Picks the backend for a path — the disk, or the inside of an archive |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
 | `crates/manager-tui/src/main.rs` | Event loop; runs disk work in the background |
+
+## Archives
+
+Press Enter on a `.zip`, `.tar`, `.tar.gz` (or `.tgz`, `.jar`, `.apk`, `.epub`, `.odt`, …)
+and it opens like a folder. Copy out of it with F5, exactly as you would from anywhere
+else — the job engine doesn't know the difference.
+
+Archives are **read-only** for now: you can look in one and take things out, but not put
+things in. Formats not covered yet: 7z, RAR, `.tar.bz2`, `.tar.xz`, and archives inside
+other archives (the paths already describe them; nothing extracts them yet).
 
 ## License
 

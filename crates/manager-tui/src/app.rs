@@ -391,9 +391,14 @@ impl App {
                 // programs. Forget the watch so Ctrl+R or a trip to another
                 // folder and back will try again.
                 self.watching[panel] = None;
-                self.status = Some(Status::Info(format!(
-                    "No live refresh here, use Ctrl+R to refresh: {error}"
-                )));
+                // Some places can never be watched — inside an archive, say.
+                // That's how they are, not something that went wrong, so it
+                // isn't worth a message every time you open one.
+                if !matches!(error, manager_core::Error::Unsupported { .. }) {
+                    self.status = Some(Status::Info(format!(
+                        "No live refresh here, use Ctrl+R to refresh: {error}"
+                    )));
+                }
             }
             Msg::JobStarted { id, title } => self.jobs.push(JobView {
                 id,
@@ -730,10 +735,19 @@ impl App {
                 self.load(self.active, path, None);
             }
             Some(Row::Entry(entry)) => {
-                self.status = Some(Status::Info(format!(
-                    "{}: opening files arrives with previews (roadmap step 7)",
-                    entry.name
-                )))
+                let (name, path) = (entry.name.clone(), entry.path.clone());
+                match manager_core::archive::kind_for(&name) {
+                    // An archive opens as if it were a folder.
+                    Some(kind) => match path.enter(kind) {
+                        Ok(inside) => self.load(self.active, inside, None),
+                        Err(err) => self.status = Some(Status::Error(err.to_string())),
+                    },
+                    None => {
+                        self.status = Some(Status::Info(format!(
+                            "{name}: opening files arrives with previews (roadmap step 7)"
+                        )))
+                    }
+                }
             }
             None => {}
         }
@@ -911,6 +925,90 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// Answers every pending Load with whatever `entries` says that folder holds.
+    fn serve_with(app: &mut App, entries: impl Fn(&VPath) -> Vec<Entry>) {
+        for req in app.take_requests() {
+            if let Request::Load {
+                panel,
+                id,
+                path,
+                focus,
+            } = req
+            {
+                let result = Ok(entries(&path));
+                app.on_msg(Msg::Loaded {
+                    panel,
+                    id,
+                    path,
+                    focus,
+                    result,
+                });
+            }
+        }
+    }
+
+    fn app_showing(names: &[(&str, EntryKind)]) -> App {
+        let owned: Vec<(String, EntryKind)> =
+            names.iter().map(|(n, k)| (n.to_string(), *k)).collect();
+        let mut app = App::new(vp("/home"), vp("/tmp"));
+        serve_with(&mut app, move |dir| {
+            owned
+                .iter()
+                .map(|(name, kind)| entry(dir, name, *kind, 100))
+                .collect()
+        });
+        app.take_requests();
+        app
+    }
+
+    #[test]
+    fn enter_on_a_zip_opens_it_like_a_folder() {
+        let mut app = app_showing(&[("photos.zip", EntryKind::File)]);
+
+        app.handle_key(key(KeyCode::Down)); // past ".."
+        app.handle_key(key(KeyCode::Enter));
+
+        let inside = vp("/home")
+            .join("photos.zip")
+            .unwrap()
+            .enter("zip")
+            .unwrap();
+        assert_eq!(load_requests(&mut app), [(0, inside)]);
+    }
+
+    #[test]
+    fn enter_on_an_ordinary_file_still_just_explains_itself() {
+        let mut app = app_showing(&[("notes.txt", EntryKind::File)]);
+
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(load_requests(&mut app).is_empty());
+        assert!(matches!(app.status, Some(Status::Info(_))));
+    }
+
+    #[test]
+    fn backspace_at_the_top_of_an_archive_goes_back_to_the_file_it_is() {
+        let mut app = app_showing(&[("photos.zip", EntryKind::File)]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        serve_with(&mut app, |_| Vec::new()); // an empty archive
+        app.take_requests();
+
+        app.handle_key(key(KeyCode::Backspace));
+
+        let requests = app.take_requests();
+        let Some(Request::Load {
+            panel, path, focus, ..
+        }) = requests.first()
+        else {
+            panic!("expected a load, got {requests:?}");
+        };
+        assert_eq!(*panel, 0);
+        assert_eq!(*path, vp("/home"), "leaving an archive lands beside it");
+        assert_eq!(focus.as_deref(), Some("photos.zip"));
+    }
+
     #[test]
     fn a_loaded_panel_asks_to_be_watched() {
         let mut app = started_app();
@@ -971,6 +1069,23 @@ pub(crate) mod tests {
             Some(Some("a.txt".to_string())),
             "the reload should put the cursor back on the same file"
         );
+    }
+
+    #[test]
+    fn somewhere_that_simply_cannot_be_watched_says_nothing_at_all() {
+        // Archives can't be watched and never will be. Saying so every time
+        // you open one would be noise, not news.
+        let mut app = loaded_app();
+
+        app.on_msg(Msg::WatchFailed {
+            panel: 0,
+            error: Error::Unsupported {
+                backend: "archive",
+                path: vp("/home/photos.zip"),
+            },
+        });
+
+        assert_eq!(app.status, None, "this isn't worth telling anyone about");
     }
 
     #[test]

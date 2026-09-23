@@ -13,18 +13,22 @@
 //! - [`watch`]: telling the UI when a folder changed behind its back.
 //! - [`sort_entries`]: Total Commander–style sorting (folders first, natural order).
 
+pub mod archive;
 mod entry;
 mod error;
 pub mod jobs;
 mod local;
+mod router;
 mod sort;
 mod vfs;
 mod vpath;
 pub mod watch;
 
+pub use archive::ArchiveFs;
 pub use entry::{Entry, EntryKind, LinkTarget, Permissions};
 pub use error::{Error, Result};
 pub use local::LocalFs;
+pub use router::Router;
 pub use sort::{SortKey, SortOrder, SortSpec, natural_cmp, sort_entries};
 pub use vfs::{Capabilities, ReadStream, Vfs, WriteStream};
 pub use vpath::{Base, InnerPath, Layer, VPath};

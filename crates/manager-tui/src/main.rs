@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
 use manager_core::watch::{Coalescer, WatchHandle, WatchSink};
-use manager_core::{LocalFs, VPath, Vfs};
+use manager_core::{Router, VPath, Vfs};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 use tokio::runtime::Runtime;
@@ -180,7 +180,7 @@ impl<'rt> Executor<'rt> {
         let (watch_tx, watch_rx) = mpsc::channel();
         Executor {
             runtime,
-            vfs: Arc::new(LocalFs::new()),
+            vfs: Arc::new(Router::new()),
             msg_tx,
             msg_rx,
             job_tx,

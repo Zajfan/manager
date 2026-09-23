@@ -19,5 +19,12 @@ tempfile = "3"
 ratatui = "0.30"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 notify = "8"
+# Default features drag in C libraries (bzip2, zstd) that would complicate the
+# mobile builds later. Deflate covers essentially every ZIP in the wild; the
+# rest are pure-Rust decoders.
+zip = { version = "8", default-features = false, features = ["deflate", "deflate64", "lzma", "xz"] }
+tar = "0.4"
+# The default backend is pure Rust, which keeps cross-compiling simple.
+flate2 = "1"
 manager-core = { path = "crates/manager-core" }
 trash = "5"
