@@ -300,6 +300,37 @@ async fn hidden_files_are_flagged_the_unix_way() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn create_symlink_makes_a_real_symlink_pointing_the_right_way() {
+    // `tests/real_openssh.rs` proves the wire order `RemoteFs::create_symlink`
+    // must send to a real OpenSSH server; this proves it's actually the
+    // order sent when called the normal way, through `Vfs::create_symlink`
+    // via `Router` — not just the raw protocol call.
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("target.txt"), b"the real file").unwrap();
+    let router = connected(tmp.path()).await;
+
+    router
+        .create_symlink(
+            std::path::Path::new("target.txt"),
+            &remote("/link.txt"),
+            false,
+        )
+        .await
+        .unwrap();
+
+    let on_disk = tmp.path().join("link.txt");
+    assert!(
+        std::fs::symlink_metadata(&on_disk).is_ok_and(|m| m.file_type().is_symlink()),
+        "expected a real symlink at {on_disk:?}"
+    );
+    assert_eq!(
+        std::fs::read_link(&on_disk).unwrap().to_string_lossy(),
+        "target.txt"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn a_symlink_is_described_and_its_target_read_back() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("target.txt"), b"the real file").unwrap();

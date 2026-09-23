@@ -29,5 +29,7 @@ trash.workspace = true
 
 [dev-dependencies]
 anyhow = "1"
+# Only for tests/real_openssh.rs, which spawns a real sftp-server subprocess.
+tokio = { version = "1", features = ["process"] }
 tempfile.workspace = true
 blake3.workspace = true

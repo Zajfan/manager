@@ -253,14 +253,17 @@ impl Vfs for RemoteFs {
         _target_is_dir: bool,
     ) -> Result<()> {
         let (conn, wire) = self.session(link)?;
-        // `russh_sftp` names its parameters (path, target) in the order the
-        // SFTP spec actually defines: the new link first, what it points to
-        // second. OpenSSH's own `sftp-server` is well known to implement
-        // this backwards; this has only been checked against this crate's
-        // own client and server (see `tests/remote.rs`), not a real OpenSSH
-        // one, so verify it before relying on it against a real server.
+        // `russh_sftp` names its `symlink` parameters (path, target) in the
+        // order the SFTP spec actually defines: the new link first, what it
+        // points to second. Real OpenSSH `sftp-server` implements this
+        // backwards — confirmed against the actual binary in
+        // `tests/real_openssh.rs`, which is where to look first if a future
+        // server (or a future `russh_sftp`) makes this assumption wrong
+        // again: its own debug log names the two arguments "old" and "new",
+        // the same convention `rename(2)` uses, meaning it wants the
+        // existing target first and the new link's path second.
         conn.sftp
-            .symlink(wire, target.to_string_lossy().into_owned())
+            .symlink(target.to_string_lossy().into_owned(), wire)
             .await
             .map_err(|e| sftp_error(link, e))
     }

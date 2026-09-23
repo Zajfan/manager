@@ -399,10 +399,18 @@ impl russh_sftp::server::Handler for FsHandler {
     async fn symlink(
         &mut self,
         id: u32,
-        linkpath: String,
-        targetpath: String,
+        // Named for what real OpenSSH `sftp-server` actually does with these
+        // two fields, not what the SFTP spec (or this crate's own client
+        // parameter names) would suggest — confirmed against the real
+        // binary in `tests/real_openssh.rs`. Matching that, rather than the
+        // spec, is the whole point of this handler: a fake server that
+        // quietly did the "correct" thing here would let `RemoteFs` and its
+        // own tests agree with each other while both disagreeing with every
+        // real server anyone actually connects to.
+        old: String,
+        new: String,
     ) -> Result<Status, Self::Error> {
-        tokio::fs::symlink(targetpath, self.resolve(&linkpath))
+        tokio::fs::symlink(old, self.resolve(&new))
             .await
             .map_err(failure)?;
         Ok(ok(id))

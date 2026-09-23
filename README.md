@@ -143,6 +143,13 @@ Not yet covered: watching a remote folder for changes (there's no such thing
 in plain SFTP), and anything other than `sftp://` — FTP, WebDAV and cloud
 storage are still on the roadmap.
 
+Symlink creation is checked against the real OpenSSH `sftp-server` binary
+where one is available on the machine running the tests (see
+`crates/manager-core/tests/real_openssh.rs`), not just this project's own
+test server — OpenSSH is well known to implement that one request backwards
+from what the SFTP spec says, and this project matches OpenSSH rather than
+the spec, because OpenSSH is what's actually out there.
+
 ## Archives
 
 Press Enter on a `.zip`, `.tar`, `.tar.gz` (or `.tgz`, `.jar`, `.apk`, `.epub`, `.odt`, …)
