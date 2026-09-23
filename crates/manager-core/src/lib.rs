@@ -14,6 +14,7 @@
 //! - [`sort_entries`]: Total Commander–style sorting (folders first, natural order).
 
 pub mod archive;
+pub mod compare;
 mod entry;
 mod error;
 pub mod jobs;

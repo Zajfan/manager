@@ -26,5 +26,6 @@ zip = { version = "8", default-features = false, features = ["deflate", "deflate
 tar = "0.4"
 # The default backend is pure Rust, which keeps cross-compiling simple.
 flate2 = "1"
+blake3 = "1"
 manager-core = { path = "crates/manager-core" }
 trash = "5"

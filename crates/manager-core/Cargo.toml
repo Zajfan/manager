@@ -17,6 +17,7 @@ flate2.workspace = true
 # Compressed archives are decompressed once into a temporary file so that
 # reading an entry can seek instead of decompressing from the start again.
 tempfile.workspace = true
+blake3.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
@@ -26,3 +27,4 @@ trash.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+blake3.workspace = true

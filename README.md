@@ -26,6 +26,7 @@ cargo test --workspace            # run all tests
 | Insert or Space | Mark |
 | F3 | View the file under the cursor (works inside archives too) |
 | Alt+F7 | Find files by name, and optionally by what's in them |
+| Ctrl+F9 | Compare the two panels' folders, and sync what differs |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
 | Alt+H or Alt+. | Show / hide hidden files |
 | Ctrl+R | Reload (panels also refresh themselves when the folder changes) |
@@ -56,6 +57,8 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-core/src/view.rs` | Deciding what a file is, decoding it, and laying it out in lines |
 | `crates/manager-core/src/search/` | File masks, searching inside files, and walking a tree looking for both |
 | `crates/manager-tui/src/results.rs` | The list of what a search found |
+| `crates/manager-core/src/compare/` | Comparing two folder trees (by metadata or by BLAKE3 hash) and planning a sync |
+| `crates/manager-tui/src/compare.rs` | The compare view: differences, marking, and turning `>`/`<`/`U` into jobs |
 | `crates/manager-tui/src/viewer.rs` | F3: the state of the full-screen viewer and what its keys do |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
@@ -91,6 +94,30 @@ Alt+F7 searches the folder the active panel is showing, and everything below it.
 `Alt+C` matches case, `Alt+H` looks in hidden files and folders. Results arrive
 while the search is still running; Enter takes the panel to the file, Esc stops.
 Because it goes through the same `Vfs`, it searches inside archives too.
+
+## Comparing and syncing two folders
+
+Ctrl+F9 compares the left panel's folder against the right one's, all the way
+down. A file is checked by size and modified time; turn on "check content" in
+the dialog to hash both sides instead, for the rare case something changed
+without either one moving.
+
+| Keys | Action |
+|---|---|
+| ↑ ↓ PgUp PgDn Home End | Move |
+| Space or Insert | Mark a difference (or unmark it) |
+| A | Mark every difference that can be synced |
+| > | Sync the marked entries (or the one under the cursor) left to right |
+| < | The same, right to left |
+| U | Sync using whichever side is newer, for each difference |
+| Esc or F10 | Close (stops the comparison if it's still running) |
+
+Syncing only ever copies — nothing is deleted, so a `<` or `>` sync fills gaps
+and overwrites older copies but never removes an extra file on the other side.
+A file and a folder that happen to share a name (`?` in the list) can't be
+synced automatically; that's a call for a person to make. Because it's built
+on the same `Vfs`, comparing and syncing both work with an archive as either
+side.
 
 ## Archives
 

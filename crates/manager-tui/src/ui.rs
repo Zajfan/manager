@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row as TableRow, Table};
 
 use crate::app::{App, Dialog, Focus, JobView, Panel, Question, Row, Status};
+use crate::compare::Compare;
 use crate::format;
 use crate::results::Results;
 use crate::viewer::{Mode, Viewer};
@@ -17,8 +18,13 @@ use crate::viewer::{Mode, Viewer};
 const NARROW: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    // A search's results cover everything, as does the viewer: in both cases
-    // you are looking at something other than the two folders.
+    // A folder comparison's results, a search's results, and the viewer all
+    // cover everything: in each case you're looking at something other than
+    // the two folders.
+    if let Some(compare) = app.compare.as_mut() {
+        draw_compare(frame, compare);
+        return;
+    }
     if let Some(results) = app.results.as_mut() {
         draw_results(frame, results);
         return;
@@ -136,6 +142,90 @@ fn draw_results(frame: &mut Frame, results: &mut Results) {
         Paragraph::new("Enter go to file   ↑↓ PgUp PgDn Home End   EscClose").style(bar),
         keys,
     );
+}
+
+/// The full-screen list of what a folder comparison found.
+fn draw_compare(frame: &mut Frame, compare: &mut Compare) {
+    let [title, body, status, keys] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    compare.fit(usize::from(body.height).max(1));
+    let bar = Style::new().bg(Color::Blue).fg(Color::White);
+    frame.render_widget(
+        Paragraph::new(format!(" Compare: {}", compare.summary)).style(bar),
+        title,
+    );
+
+    let selected = compare.selected_row();
+    let lines: Vec<Line> = if compare.entries.is_empty() {
+        vec![Line::from(
+            if compare.running {
+                "Comparing..."
+            } else {
+                "No differences"
+            }
+            .dim(),
+        )]
+    } else {
+        compare
+            .visible()
+            .iter()
+            .enumerate()
+            .map(|(row, entry)| compare_line(compare, row, entry, row == selected))
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(compare.status()), status);
+    frame.render_widget(
+        Paragraph::new("Space mark  A all  > L→R  < R→L  U newer  Esc close").style(bar),
+        keys,
+    );
+}
+
+/// One row of the compare view: a mark, a status letter, the name and where
+/// it sits, coloured by what kind of difference it is.
+fn compare_line(
+    compare: &Compare,
+    visible_row: usize,
+    entry: &manager_core::compare::DiffEntry,
+    is_selected: bool,
+) -> Line<'static> {
+    use manager_core::compare::DiffStatus;
+
+    // `visible_row` is an index into what's on screen; the mark state lives
+    // on the underlying (scrolled) index, which `Compare` tracks for us.
+    let absolute = compare.first_visible_index() + visible_row;
+    let mark = if compare.is_marked(absolute) {
+        "*"
+    } else {
+        " "
+    };
+    let (letter, color) = match entry.status {
+        DiffStatus::LeftOnly => ("<", Color::Green),
+        DiffStatus::RightOnly => (">", Color::Green),
+        DiffStatus::Differs => ("!", Color::Yellow),
+        DiffStatus::KindMismatch => ("?", Color::Red),
+        DiffStatus::Same => ("=", Color::DarkGray),
+    };
+    let where_ = entry.rel_path[..entry.rel_path.len().saturating_sub(1)].join("/");
+    let line = Line::from(vec![
+        Span::raw(format!("{mark} ")),
+        Span::raw(letter).fg(color).bold(),
+        Span::raw(" "),
+        Span::raw(entry.name().to_string()).bold(),
+        Span::raw("  "),
+        Span::raw(where_).dim(),
+    ]);
+    if is_selected {
+        line.style(Style::new().bg(Color::Blue).fg(Color::White))
+    } else {
+        line
+    }
 }
 
 /// F3's full-screen view of one file.
@@ -462,6 +552,27 @@ fn question_job(question: &Question) -> Option<JobId> {
 
 fn draw_dialog(frame: &mut Frame, dialog: &Dialog) {
     match dialog {
+        Dialog::CompareDirs {
+            by_content,
+            include_hidden,
+        } => {
+            let tick = |on: &bool| if *on { "[x]" } else { "[ ]" };
+            popup(
+                frame,
+                " Compare folders ",
+                vec![
+                    Line::from("Compares the left panel against the right one."),
+                    Line::from(""),
+                    Line::from(format!(
+                        "{} Alt+C check content    {} Alt+H compare hidden",
+                        tick(by_content),
+                        tick(include_hidden)
+                    )),
+                ],
+                " Enter compare · Esc cancel ",
+                Color::Yellow,
+            )
+        }
         Dialog::Find {
             mask,
             text,
@@ -786,6 +897,64 @@ mod tests {
         let screen = render(&mut app, 80, 20);
 
         assert!(screen.contains("Nothing found"), "{screen}");
+    }
+
+    #[test]
+    fn the_compare_dialog_shows_its_switches() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::CONTROL));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("Compare folders"), "{screen}");
+        assert!(screen.contains("Alt+C check content"), "{screen}");
+    }
+
+    #[test]
+    fn the_compare_view_shows_differences_with_a_status_letter() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let missing = crate::app::tests::entry(
+            &crate::app::tests::vp("/home"),
+            "only-left.txt",
+            EntryKind::File,
+            10,
+        );
+        app.on_msg(crate::app::Msg::CompareFound(Box::new(
+            manager_core::compare::DiffEntry {
+                rel_path: vec!["only-left.txt".into()],
+                left: Some(missing),
+                right: None,
+                status: manager_core::compare::DiffStatus::LeftOnly,
+                newer: None,
+            },
+        )));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("only-left.txt"), "{screen}");
+        assert!(screen.contains("Comparing"), "{screen}");
+        assert!(!screen.contains("b.txt"), "the panels are hidden: {screen}");
+    }
+
+    #[test]
+    fn a_comparison_with_no_differences_says_so_rather_than_showing_a_blank() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_msg(crate::app::Msg::CompareFinished(
+            manager_core::compare::CompareReport {
+                differences: 0,
+                scanned: 20,
+                unreadable: 0,
+                cancelled: false,
+            },
+        ));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("No differences"), "{screen}");
     }
 
     #[test]

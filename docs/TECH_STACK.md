@@ -204,7 +204,11 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 9. **Search & compare** – content search, folder compare/sync, duplicate finder.
    - ✅ Alt+F7: masks (`*.md;*.txt`, exclusions after `|`), text inside files, hidden files
      on or off, results while it runs, cancel. Searches archives too, being a `Vfs` walk.
-   - Folder compare/sync and the duplicate finder are still to come.
+   - ✅ Ctrl+F9: recursive compare by metadata or BLAKE3 hash, mark and sync (left→right,
+     right→left, or whichever side is newer). Copy-only by design — nothing is ever deleted
+     by a sync, and a file/folder name clash is left for a person to resolve. Reuses the
+     existing job engine unchanged: every `SyncAction` is just a `JobSpec::Copy`.
+   - The duplicate finder is still to come.
 10. **Mobile** – Android (SAF plugin) then iOS.
 11. **Plugins** – WASM plugin API.
 

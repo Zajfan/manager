@@ -4,6 +4,7 @@
 //! or a URI (`file:///tmp`). Defaults: current folder on the left, home folder on the right.
 
 mod app;
+mod compare;
 mod format;
 mod results;
 mod ui;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use manager_core::compare::{CompareEvent, CompareHandle, run as compare_run};
 use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
 use manager_core::search::{SearchEvent, SearchHandle, run as search};
 use manager_core::watch::{Coalescer, WatchHandle, WatchSink};
@@ -159,6 +161,9 @@ struct Executor<'rt> {
     /// The search that's running, and where its findings arrive.
     search: Option<SearchHandle>,
     search_rx: Option<UnboundedReceiver<SearchEvent>>,
+    /// The comparison that's running, and where its findings arrive.
+    compare: Option<CompareHandle>,
+    compare_rx: Option<UnboundedReceiver<CompareEvent>>,
 }
 
 /// A live file-system watch on the folder one panel is showing.
@@ -198,6 +203,8 @@ impl<'rt> Executor<'rt> {
             watch_rx,
             search: None,
             search_rx: None,
+            compare: None,
+            compare_rx: None,
         }
     }
 
@@ -227,6 +234,13 @@ impl<'rt> Executor<'rt> {
                 self.search_rx = Some(rx);
             }
             Request::CancelSearch => self.stop_search(),
+            Request::StartCompare(spec) => {
+                let _inside_runtime = self.runtime.enter();
+                let (tx, rx) = unbounded_channel();
+                self.compare = Some(compare_run::start(Arc::clone(&self.vfs), *spec, tx));
+                self.compare_rx = Some(rx);
+            }
+            Request::CancelCompare => self.stop_compare(),
             Request::ReadWindow { path, len } => self.spawn(async move |vfs| Msg::Viewed {
                 result: vfs.read_window(&path, 0, len).await,
                 path,
@@ -260,6 +274,38 @@ impl<'rt> Executor<'rt> {
         }
         // Dropping the receiver also tells the search nobody is listening.
         self.search_rx = None;
+    }
+
+    /// Stops the running comparison, if there is one.
+    fn stop_compare(&mut self) {
+        if let Some(handle) = self.compare.take() {
+            handle.cancel();
+        }
+        self.compare_rx = None;
+    }
+
+    /// Hands over whatever the comparison has found since the last frame.
+    fn feed_compare(&mut self, app: &mut App) {
+        let (Some(handle), Some(rx)) = (&self.compare, &mut self.compare_rx) else {
+            return;
+        };
+        app.on_msg(Msg::CompareProgress {
+            scanned: handle.scanned(),
+        });
+        let mut done = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                CompareEvent::Found(entry) => app.on_msg(Msg::CompareFound(entry)),
+                CompareEvent::Finished(report) => {
+                    app.on_msg(Msg::CompareFinished(report));
+                    done = true;
+                }
+            }
+        }
+        if done {
+            self.compare = None;
+            self.compare_rx = None;
+        }
     }
 
     /// Hands over whatever the search has found since the last frame.
@@ -375,6 +421,7 @@ impl<'rt> Executor<'rt> {
         self.collect_watches(app);
         self.poll_watches(app);
         self.feed_search(app);
+        self.feed_compare(app);
         for (&id, handle) in &self.jobs {
             app.on_msg(Msg::JobProgress {
                 id,
@@ -392,6 +439,7 @@ impl<'rt> Executor<'rt> {
     /// Cancels running jobs and gives them a moment to clean up their temp files.
     fn shutdown(&mut self) {
         self.stop_search();
+        self.stop_compare();
         for handle in self.jobs.values() {
             handle.cancel();
         }

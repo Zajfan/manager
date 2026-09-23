@@ -7,6 +7,9 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use manager_core::compare::{
+    CompareReport, CompareSpec, DiffEntry, SyncDirection, plan_sync, sync_jobs,
+};
 use manager_core::jobs::{
     ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent, JobId,
     JobReport, JobSpec, Outcome, Progress,
@@ -16,6 +19,7 @@ use manager_core::{Entry, Result, SortKey, SortOrder, SortSpec, VPath, sort_entr
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
+use crate::compare::{self, Compare};
 use crate::format;
 use crate::results::{self, Results};
 use crate::viewer::{self, Action, Viewer};
@@ -38,6 +42,10 @@ pub enum Request {
     StartSearch(Box<SearchSpec>),
     /// Stop the search that's running, if any.
     CancelSearch,
+    /// Start comparing two folders.
+    StartCompare(Box<CompareSpec>),
+    /// Stop the comparison that's running, if any.
+    CancelCompare,
     /// Read the start of `path` for the viewer.
     ReadWindow {
         path: VPath,
@@ -84,6 +92,13 @@ pub enum Msg {
         scanned: u64,
     },
     SearchFinished(SearchReport),
+    /// The comparison found a difference.
+    CompareFound(Box<DiffEntry>),
+    /// How far the comparison has got.
+    CompareProgress {
+        scanned: u64,
+    },
+    CompareFinished(CompareReport),
     /// The bytes the viewer asked for, or why they couldn't be read.
     Viewed {
         path: VPath,
@@ -134,6 +149,11 @@ pub enum Dialog {
         is_move: bool,
         sources: Vec<VPath>,
         input: String,
+    },
+    /// Ctrl+F9: which two folders, compared which way?
+    CompareDirs {
+        by_content: bool,
+        include_hidden: bool,
     },
     /// Alt+F7: what are we looking for?
     Find {
@@ -309,6 +329,11 @@ pub struct App {
     pub viewer: Option<Viewer>,
     /// What a search found. Like the viewer, it takes every key while open.
     pub results: Option<Results>,
+    /// What a folder comparison found. Like results, takes every key while open.
+    pub compare: Option<Compare>,
+    /// The two folders the running comparison was started from, so syncing
+    /// afterwards knows where each side's destination folder is.
+    compare_roots: Option<(VPath, VPath)>,
     /// The folder each panel currently has a file-system watch on, so we don't
     /// re-watch the same folder on every reload.
     watching: [Option<VPath>; 2],
@@ -333,6 +358,8 @@ impl App {
             questions: VecDeque::new(),
             viewer: None,
             results: None,
+            compare: None,
+            compare_roots: None,
             watching: [None, None],
             quit_armed: false,
             requests: Vec::new(),
@@ -451,6 +478,21 @@ impl App {
                     results.finished(report);
                 }
             }
+            Msg::CompareFound(entry) => {
+                if let Some(compare) = self.compare.as_mut() {
+                    compare.found(*entry);
+                }
+            }
+            Msg::CompareProgress { scanned } => {
+                if let Some(compare) = self.compare.as_mut() {
+                    compare.progress(scanned);
+                }
+            }
+            Msg::CompareFinished(report) => {
+                if let Some(compare) = self.compare.as_mut() {
+                    compare.finished(report);
+                }
+            }
             Msg::DirChanged { panel } => self.reload(panel),
             Msg::WatchFailed { panel, error } => {
                 // Not fatal: the panel just won't notice changes made by other
@@ -517,6 +559,12 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // The compare view covers the screen too, and takes priority for the
+        // same reason: you're looking at something other than the panels.
+        if self.compare.is_some() {
+            self.handle_compare_key(key);
+            return;
+        }
         // The results list covers the screen, so it gets every key until it closes.
         if self.results.is_some() {
             self.handle_results_key(key);
@@ -579,6 +627,7 @@ impl App {
 
             KeyCode::F(5) => self.open_transfer(false),
             KeyCode::F(6) => self.open_transfer(true),
+            KeyCode::F(9) if ctrl => self.open_compare(),
             KeyCode::F(7) if alt => self.open_find(),
             KeyCode::F(7) => {
                 self.dialog = Some(Dialog::MkDir {
@@ -759,6 +808,30 @@ impl App {
             return;
         }
 
+        // The compare dialog is just two switches.
+        if let Dialog::CompareDirs {
+            by_content,
+            include_hidden,
+        } = dialog
+        {
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match key.code {
+                KeyCode::Char('c' | 'C') if alt => *by_content = !*by_content,
+                KeyCode::Char('h' | 'H') if alt => *include_hidden = !*include_hidden,
+                KeyCode::Enter => {
+                    if let Some(Dialog::CompareDirs {
+                        by_content,
+                        include_hidden,
+                    }) = self.dialog.take()
+                    {
+                        self.start_compare(by_content, include_hidden);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // The find dialog has two fields and a couple of switches.
         if let Dialog::Find {
             mask,
@@ -874,6 +947,67 @@ impl App {
         }
     }
 
+    /// Ctrl+F9: start comparing the left panel against the right one.
+    fn open_compare(&mut self) {
+        self.dialog = Some(Dialog::CompareDirs {
+            by_content: false,
+            include_hidden: self.show_hidden,
+        });
+    }
+
+    fn handle_compare_key(&mut self, key: KeyEvent) {
+        let Some(compare) = self.compare.as_mut() else {
+            return;
+        };
+        match compare.handle_key(key) {
+            compare::Action::Stay => {}
+            compare::Action::Close => self.close_compare(),
+            compare::Action::Sync(direction) => self.sync_marked(direction),
+        }
+    }
+
+    /// Closes the compare view, stopping the comparison if it was still going.
+    fn close_compare(&mut self) {
+        let still_running = self.compare.as_ref().is_some_and(|c| c.running);
+        self.compare = None;
+        self.compare_roots = None;
+        if still_running {
+            self.requests.push(Request::CancelCompare);
+        }
+    }
+
+    /// `>`, `<` or `u` on the compare view: turn the marked differences (or
+    /// just the one under the cursor) into jobs, then close.
+    fn sync_marked(&mut self, direction: SyncDirection) {
+        let (Some(compare), Some((left_root, right_root))) = (&self.compare, &self.compare_roots)
+        else {
+            return;
+        };
+        let selection: Vec<DiffEntry> = compare.selection().into_iter().cloned().collect();
+        if selection.is_empty() {
+            self.close_compare();
+            return;
+        }
+        match plan_sync(&selection, direction, left_root, right_root) {
+            Ok(actions) => {
+                let jobs = sync_jobs(&actions);
+                self.status = Some(Status::Info(format!(
+                    "Syncing {}",
+                    if actions.len() == 1 {
+                        "1 item".into()
+                    } else {
+                        format!("{} items", actions.len())
+                    }
+                )));
+                self.close_compare();
+                for job in jobs {
+                    self.requests.push(Request::StartJob(job));
+                }
+            }
+            Err(err) => self.status = Some(Status::Error(err.to_string())),
+        }
+    }
+
     /// Alt+F7: start a search from the folder the active panel is showing.
     fn open_find(&mut self) {
         self.dialog = Some(Dialog::Find {
@@ -883,6 +1017,20 @@ impl App {
             case_sensitive: false,
             include_hidden: self.show_hidden,
         });
+    }
+
+    /// Begins comparing the left panel's folder against the right one's.
+    fn start_compare(&mut self, by_content: bool, include_hidden: bool) {
+        let (left, right) = (self.panels[0].path.clone(), self.panels[1].path.clone());
+        self.compare = Some(Compare::new(format!("{left} vs {right}")));
+        self.compare_roots = Some((left.clone(), right.clone()));
+        self.requests
+            .push(Request::StartCompare(Box::new(CompareSpec {
+                left,
+                right,
+                by_content,
+                include_hidden,
+            })));
     }
 
     /// Begins a search of the folder the active panel is showing.
@@ -1184,6 +1332,163 @@ pub(crate) mod tests {
 
     fn alt(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    fn compare_requests(app: &mut App) -> Vec<CompareSpec> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::StartCompare(spec) => Some(*spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn job_specs(app: &mut App) -> Vec<manager_core::jobs::JobSpec> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::StartJob(spec) => Some(spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_f9_opens_the_compare_dialog() {
+        let mut app = loaded_app();
+
+        app.handle_key(ctrl(KeyCode::F(9)));
+
+        assert!(matches!(app.dialog, Some(Dialog::CompareDirs { .. })));
+    }
+
+    #[test]
+    fn alt_c_and_alt_h_toggle_the_compare_options() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::F(9)));
+
+        app.handle_key(alt(KeyCode::Char('c')));
+        app.handle_key(alt(KeyCode::Char('h')));
+
+        let Some(Dialog::CompareDirs {
+            by_content,
+            include_hidden,
+        }) = &app.dialog
+        else {
+            panic!("the dialog closed");
+        };
+        assert!(by_content);
+        assert!(include_hidden);
+    }
+
+    #[test]
+    fn enter_starts_comparing_the_two_panels() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::F(9)));
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(app.dialog.is_none());
+        assert!(
+            app.compare.is_some(),
+            "the compare view opens straight away"
+        );
+        let started = compare_requests(&mut app);
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].left, vp("/home"));
+        assert_eq!(started[0].right, vp("/tmp"));
+    }
+
+    #[test]
+    fn esc_closes_the_compare_dialog_without_comparing() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::F(9)));
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.dialog.is_none());
+        assert!(app.compare.is_none());
+        assert!(compare_requests(&mut app).is_empty());
+    }
+
+    fn started_compare(app: &mut App) {
+        app.handle_key(ctrl(KeyCode::F(9)));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+    }
+
+    #[test]
+    fn differences_turn_up_in_the_compare_view_as_they_are_found() {
+        let mut app = loaded_app();
+        started_compare(&mut app);
+
+        app.on_msg(Msg::CompareFound(Box::new(DiffEntry {
+            rel_path: vec!["only-left.txt".into()],
+            left: Some(entry(&vp("/home"), "only-left.txt", EntryKind::File, 10)),
+            right: None,
+            status: manager_core::compare::DiffStatus::LeftOnly,
+            newer: None,
+        })));
+        app.on_msg(Msg::CompareFinished(manager_core::compare::CompareReport {
+            differences: 1,
+            scanned: 9,
+            unreadable: 0,
+            cancelled: false,
+        }));
+
+        let compare = app.compare.as_ref().unwrap();
+        assert_eq!(compare.entries.len(), 1);
+        assert!(!compare.running);
+    }
+
+    #[test]
+    fn closing_the_compare_view_stops_a_comparison_still_running() {
+        let mut app = loaded_app();
+        started_compare(&mut app);
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.compare.is_none());
+        assert!(app.take_requests().contains(&Request::CancelCompare));
+    }
+
+    #[test]
+    fn the_compare_view_takes_the_keys_while_it_is_open() {
+        let mut app = loaded_app();
+        started_compare(&mut app);
+
+        app.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(app.active, 0, "Tab didn't reach the panels");
+    }
+
+    #[test]
+    fn greater_than_syncs_the_current_entry_left_to_right_and_closes() {
+        let mut app = loaded_app();
+        started_compare(&mut app);
+        app.on_msg(Msg::CompareFound(Box::new(DiffEntry {
+            rel_path: vec!["only-left.txt".into()],
+            left: Some(entry(&vp("/home"), "only-left.txt", EntryKind::File, 10)),
+            right: None,
+            status: manager_core::compare::DiffStatus::LeftOnly,
+            newer: None,
+        })));
+
+        app.handle_key(key(KeyCode::Char('>')));
+
+        assert!(
+            app.compare.is_none(),
+            "the view closes once a sync is queued"
+        );
+        let jobs = job_specs(&mut app);
+        assert_eq!(
+            jobs,
+            [manager_core::jobs::JobSpec::Copy {
+                sources: vec![vp("/home").join("only-left.txt").unwrap()],
+                dest: vp("/tmp"),
+            }]
+        );
     }
 
     #[test]
