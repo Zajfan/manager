@@ -114,11 +114,12 @@ impl Vfs for LocalFs {
         // share, so it goes to the blocking pool like everything else here.
         run_blocking(move || {
             let reported = dir.clone();
+            // macOS reports the resolved path (`/private/var/...` for a folder
+            // under `/var/...`), so compare against the resolved form.
+            let watched = std::fs::canonicalize(&native).unwrap_or_else(|_| native.clone());
             let mut watcher =
                 notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                    // A watch error (a dropped event, a vanished folder) is
-                    // itself a reason to look at the folder again.
-                    if event.is_ok_and(|e| !is_noise(&e.kind)) {
+                    if event.is_ok_and(|e| concerns(&watched, &e)) {
                         sink(reported.clone());
                     }
                 })
@@ -163,12 +164,31 @@ impl Vfs for LocalFs {
     }
 }
 
-/// Events that change nothing a panel shows.
+/// Whether an event is worth reloading the watched folder for.
 ///
-/// Reading a file fires access events on Linux, so without this a panel would
-/// reload itself every time anything opened a file in it, previews included.
-fn is_noise(kind: &EventKind) -> bool {
-    matches!(kind, EventKind::Access(_))
+/// Two things are filtered out:
+///
+/// - Access events. Reading a file fires them on Linux, so without this a
+///   panel would reload every time anything opened a file in it, previews
+///   included.
+/// - Anything deeper than the folder itself. Linux's inotify only reports
+///   direct children of a non-recursive watch, but macOS's FSEvents is
+///   recursive by nature, so without this the same code would behave
+///   differently per platform, and a panel would reload for changes it isn't
+///   even showing.
+fn concerns(dir: &Path, event: &notify::Event) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    // Some events carry no path at all (an overflow, a rescan request). A
+    // needless refresh is far cheaper than a missed change.
+    if event.paths.is_empty() {
+        return true;
+    }
+    event
+        .paths
+        .iter()
+        .any(|path| path.parent() == Some(dir) || path == dir)
 }
 
 fn watch_error(path: &VPath, err: notify::Error) -> Error {
@@ -388,4 +408,85 @@ fn is_hidden(_name: &str, meta: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use notify::event::{CreateKind, EventKind, ModifyKind};
+
+    use super::*;
+
+    fn event(kind: EventKind, paths: &[&str]) -> notify::Event {
+        notify::Event {
+            kind,
+            paths: paths.iter().map(PathBuf::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    const CREATED: EventKind = EventKind::Create(CreateKind::File);
+
+    #[test]
+    fn a_change_to_a_direct_child_counts() {
+        assert!(concerns(
+            Path::new("/watched"),
+            &event(CREATED, &["/watched/new.txt"])
+        ));
+    }
+
+    #[test]
+    fn a_change_further_down_does_not() {
+        // The panel isn't showing `/watched/sub`, so nothing on screen changed.
+        for path in ["/watched/sub/deep.txt", "/watched/sub/deeper/deep.txt"] {
+            assert!(
+                !concerns(Path::new("/watched"), &event(CREATED, &[path])),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_to_the_folder_itself_counts() {
+        assert!(concerns(
+            Path::new("/watched"),
+            &event(EventKind::Modify(ModifyKind::Any), &["/watched"])
+        ));
+    }
+
+    #[test]
+    fn a_rename_counts_when_either_end_is_in_the_folder() {
+        let moved_in = event(
+            EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both)),
+            &["/elsewhere/old.txt", "/watched/new.txt"],
+        );
+        assert!(concerns(Path::new("/watched"), &moved_in));
+    }
+
+    #[test]
+    fn merely_reading_a_file_does_not_count() {
+        let read = event(
+            EventKind::Access(notify::event::AccessKind::Open(
+                notify::event::AccessMode::Read,
+            )),
+            &["/watched/notes.txt"],
+        );
+        assert!(!concerns(Path::new("/watched"), &read));
+    }
+
+    #[test]
+    fn an_event_with_no_path_is_treated_as_a_change() {
+        // Usually an overflow: the watcher lost track, so look again.
+        assert!(concerns(
+            Path::new("/watched"),
+            &event(EventKind::Other, &[])
+        ));
+    }
+
+    #[test]
+    fn a_sibling_folder_is_not_our_business() {
+        assert!(!concerns(
+            Path::new("/watched"),
+            &event(CREATED, &["/other/new.txt"])
+        ));
+    }
 }
