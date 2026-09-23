@@ -17,6 +17,25 @@ fn vp(path: impl AsRef<Path>) -> VPath {
     VPath::local(path).unwrap()
 }
 
+/// Marks a file or folder hidden.
+///
+/// A leading dot is enough on Unix, but on Windows "hidden" is a real file
+/// attribute and the dot means nothing, so the fixture has to set it for the
+/// test to be asking the same question on both.
+fn make_hidden(path: &Path) {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("attrib")
+            .arg("+h")
+            .arg(path)
+            .status()
+            .expect("couldn't run attrib");
+        assert!(status.success(), "attrib +h failed on {}", path.display());
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
 /// Builds a little tree to search through.
 fn sample_tree(root: &Path) {
     fs::create_dir_all(root.join("src")).unwrap();
@@ -29,6 +48,8 @@ fn sample_tree(root: &Path) {
     fs::write(root.join("docs/old/ancient.md"), b"very old").unwrap();
     fs::write(root.join(".hidden.md"), b"secret widgets").unwrap();
     fs::write(root.join(".git/config"), b"widgets").unwrap();
+    make_hidden(&root.join(".hidden.md"));
+    make_hidden(&root.join(".git"));
 }
 
 struct Ran {
