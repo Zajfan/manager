@@ -202,6 +202,9 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    - Images, PDF and media wait for the GUI, where the webview renders them.
 8. **Remote** – SFTP, then cloud via OpenDAL.
 9. **Search & compare** – content search, folder compare/sync, duplicate finder.
+   - ✅ Alt+F7: masks (`*.md;*.txt`, exclusions after `|`), text inside files, hidden files
+     on or off, results while it runs, cancel. Searches archives too, being a `Vfs` walk.
+   - Folder compare/sync and the duplicate finder are still to come.
 10. **Mobile** – Android (SAF plugin) then iOS.
 11. **Plugins** – WASM plugin API.
 

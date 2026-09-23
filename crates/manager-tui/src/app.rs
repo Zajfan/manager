@@ -11,11 +11,13 @@ use manager_core::jobs::{
     ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent, JobId,
     JobReport, JobSpec, Outcome, Progress,
 };
+use manager_core::search::{Masks, Needle, SearchReport, SearchSpec};
 use manager_core::{Entry, Result, SortKey, SortOrder, SortSpec, VPath, sort_entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::format;
+use crate::results::{self, Results};
 use crate::viewer::{self, Action, Viewer};
 
 /// Work for the background executor.
@@ -32,6 +34,10 @@ pub enum Request {
         panel: usize,
         path: VPath,
     },
+    /// Start looking for files.
+    StartSearch(Box<SearchSpec>),
+    /// Stop the search that's running, if any.
+    CancelSearch,
     /// Read the start of `path` for the viewer.
     ReadWindow {
         path: VPath,
@@ -71,6 +77,13 @@ pub enum Msg {
         path: VPath,
         result: Result<()>,
     },
+    /// The search found something.
+    SearchFound(Box<Entry>),
+    /// How far the search has got.
+    SearchProgress {
+        scanned: u64,
+    },
+    SearchFinished(SearchReport),
     /// The bytes the viewer asked for, or why they couldn't be read.
     Viewed {
         path: VPath,
@@ -121,6 +134,15 @@ pub enum Dialog {
         is_move: bool,
         sources: Vec<VPath>,
         input: String,
+    },
+    /// Alt+F7: what are we looking for?
+    Find {
+        mask: String,
+        text: String,
+        /// Which of the two fields is being typed into.
+        on_text: bool,
+        case_sensitive: bool,
+        include_hidden: bool,
     },
     /// F8 / Shift+F8: are you sure?
     Delete {
@@ -285,6 +307,8 @@ pub struct App {
     /// The file being looked at with F3, if any. While it's open it takes
     /// every key.
     pub viewer: Option<Viewer>,
+    /// What a search found. Like the viewer, it takes every key while open.
+    pub results: Option<Results>,
     /// The folder each panel currently has a file-system watch on, so we don't
     /// re-watch the same folder on every reload.
     watching: [Option<VPath>; 2],
@@ -308,6 +332,7 @@ impl App {
             focus: Focus::Panels,
             questions: VecDeque::new(),
             viewer: None,
+            results: None,
             watching: [None, None],
             quit_armed: false,
             requests: Vec::new(),
@@ -411,6 +436,21 @@ impl App {
                     Err(err) => viewer.failed(err.to_string()),
                 }
             }
+            Msg::SearchFound(entry) => {
+                if let Some(results) = self.results.as_mut() {
+                    results.found(*entry);
+                }
+            }
+            Msg::SearchProgress { scanned } => {
+                if let Some(results) = self.results.as_mut() {
+                    results.progress(scanned);
+                }
+            }
+            Msg::SearchFinished(report) => {
+                if let Some(results) = self.results.as_mut() {
+                    results.finished(report);
+                }
+            }
             Msg::DirChanged { panel } => self.reload(panel),
             Msg::WatchFailed { panel, error } => {
                 // Not fatal: the panel just won't notice changes made by other
@@ -477,6 +517,11 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // The results list covers the screen, so it gets every key until it closes.
+        if self.results.is_some() {
+            self.handle_results_key(key);
+            return;
+        }
         // The viewer covers the screen, so it gets every key until it closes.
         if let Some(viewer) = self.viewer.as_mut() {
             if viewer.handle_key(key) == Action::Close {
@@ -534,6 +579,7 @@ impl App {
 
             KeyCode::F(5) => self.open_transfer(false),
             KeyCode::F(6) => self.open_transfer(true),
+            KeyCode::F(7) if alt => self.open_find(),
             KeyCode::F(7) => {
                 self.dialog = Some(Dialog::MkDir {
                     input: String::new(),
@@ -713,6 +759,47 @@ impl App {
             return;
         }
 
+        // The find dialog has two fields and a couple of switches.
+        if let Dialog::Find {
+            mask,
+            text,
+            on_text,
+            case_sensitive,
+            include_hidden,
+        } = dialog
+        {
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match key.code {
+                KeyCode::Char('c' | 'C') if alt => *case_sensitive = !*case_sensitive,
+                KeyCode::Char('h' | 'H') if alt => *include_hidden = !*include_hidden,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
+                    *on_text = !*on_text
+                }
+                KeyCode::Backspace => {
+                    let field = if *on_text { text } else { mask };
+                    field.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let field = if *on_text { text } else { mask };
+                    field.push(c);
+                }
+                KeyCode::Enter => {
+                    if let Some(Dialog::Find {
+                        mask,
+                        text,
+                        case_sensitive,
+                        include_hidden,
+                        ..
+                    }) = self.dialog.take()
+                    {
+                        self.start_search(&mask, &text, case_sensitive, include_hidden);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Text-input dialogs.
         let (Dialog::MkDir { input } | Dialog::Transfer { input, .. }) = dialog else {
             return;
@@ -784,6 +871,63 @@ impl App {
                 }
             }
             None => {}
+        }
+    }
+
+    /// Alt+F7: start a search from the folder the active panel is showing.
+    fn open_find(&mut self) {
+        self.dialog = Some(Dialog::Find {
+            mask: "*".into(),
+            text: String::new(),
+            on_text: false,
+            case_sensitive: false,
+            include_hidden: self.show_hidden,
+        });
+    }
+
+    /// Begins a search of the folder the active panel is showing.
+    fn start_search(&mut self, mask: &str, text: &str, case_sensitive: bool, include_hidden: bool) {
+        let root = self.active_panel().path.clone();
+        let text = text.trim();
+        let mut summary = format!("{mask} in {root}");
+        if !text.is_empty() {
+            summary = format!("{mask} containing \"{text}\" in {root}");
+        }
+        self.results = Some(Results::new(summary));
+        self.requests
+            .push(Request::StartSearch(Box::new(SearchSpec {
+                root,
+                masks: Masks::parse(mask),
+                needle: Needle::new(text, case_sensitive),
+                include_hidden,
+            })));
+    }
+
+    fn handle_results_key(&mut self, key: KeyEvent) {
+        let Some(results) = self.results.as_mut() else {
+            return;
+        };
+        match results.handle_key(key) {
+            results::Action::Stay => {}
+            results::Action::Close => self.close_results(),
+            results::Action::Goto(path) => {
+                self.close_results();
+                // Show the folder it's in, with the cursor on the file itself.
+                if let Some(folder) = path.parent() {
+                    let name = path.file_name();
+                    self.load(self.active, folder, name);
+                }
+            }
+        }
+    }
+
+    /// Closes the list, and stops the search if it was still going: nobody is
+    /// left to read what it finds.
+    fn close_results(&mut self) {
+        let still_running = self.results.as_ref().is_some_and(|r| r.running);
+        self.results = None;
+        if still_running {
+            self.requests.push(Request::CancelSearch);
         }
     }
 
@@ -1020,6 +1164,224 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn search_requests(app: &mut App) -> Vec<SearchSpec> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::StartSearch(spec) => Some(*spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn type_in(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn alt(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn alt_f7_opens_the_find_dialog() {
+        let mut app = loaded_app();
+
+        app.handle_key(alt(KeyCode::F(7)));
+
+        assert!(matches!(app.dialog, Some(Dialog::Find { .. })));
+    }
+
+    #[test]
+    fn plain_f7_still_makes_a_folder() {
+        let mut app = loaded_app();
+
+        app.handle_key(key(KeyCode::F(7)));
+
+        assert!(matches!(app.dialog, Some(Dialog::MkDir { .. })));
+    }
+
+    #[test]
+    fn typing_fills_the_mask_and_tab_moves_to_the_text() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Backspace)); // clear the default "*"
+
+        type_in(&mut app, "*.md");
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "hello");
+
+        let Some(Dialog::Find {
+            mask,
+            text,
+            on_text,
+            ..
+        }) = &app.dialog
+        else {
+            panic!("the dialog closed");
+        };
+        assert_eq!(mask, "*.md");
+        assert_eq!(text, "hello");
+        assert!(on_text);
+    }
+
+    #[test]
+    fn alt_c_and_alt_h_change_the_options() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+
+        app.handle_key(alt(KeyCode::Char('c')));
+        app.handle_key(alt(KeyCode::Char('h')));
+
+        let Some(Dialog::Find {
+            case_sensitive,
+            include_hidden,
+            mask,
+            ..
+        }) = &app.dialog
+        else {
+            panic!("the dialog closed");
+        };
+        assert!(case_sensitive);
+        assert!(
+            include_hidden,
+            "the default follows the panel, then toggles"
+        );
+        assert_eq!(mask, "*", "the letters didn't land in the mask");
+    }
+
+    #[test]
+    fn enter_starts_a_search_of_the_folder_on_show() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Backspace));
+        type_in(&mut app, "*.md");
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "widgets");
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(app.dialog.is_none());
+        assert!(
+            app.results.is_some(),
+            "the results list opens straight away"
+        );
+        let started = search_requests(&mut app);
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].root, vp("/home"));
+        assert_eq!(started[0].masks, Masks::parse("*.md"));
+        assert_eq!(started[0].needle, Needle::new("widgets", false));
+    }
+
+    #[test]
+    fn an_empty_text_box_means_do_not_search_the_contents() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(search_requests(&mut app)[0].needle, None);
+    }
+
+    #[test]
+    fn esc_closes_the_find_dialog_without_searching() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.dialog.is_none());
+        assert!(app.results.is_none());
+        assert!(search_requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn hits_turn_up_in_the_list_as_they_are_found() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+
+        app.on_msg(Msg::SearchFound(Box::new(entry(
+            &vp("/home/docs"),
+            "found.md",
+            EntryKind::File,
+            10,
+        ))));
+        app.on_msg(Msg::SearchFinished(SearchReport {
+            found: 1,
+            scanned: 9,
+            unreadable: 0,
+            cancelled: false,
+        }));
+
+        let results = app.results.as_ref().unwrap();
+        assert_eq!(results.hits.len(), 1);
+        assert!(!results.running);
+    }
+
+    #[test]
+    fn enter_on_a_result_takes_the_panel_to_it() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+        app.on_msg(Msg::SearchFound(Box::new(entry(
+            &vp("/home/docs"),
+            "found.md",
+            EntryKind::File,
+            10,
+        ))));
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(app.results.is_none(), "the list closes");
+        let loads: Vec<_> = app
+            .take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Load {
+                    panel, path, focus, ..
+                } => Some((panel, path, focus)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            loads,
+            [(0, vp("/home/docs"), Some("found.md".to_string()))],
+            "it goes to the folder and puts the cursor on the file"
+        );
+    }
+
+    #[test]
+    fn closing_the_list_stops_a_search_that_is_still_going() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.results.is_none());
+        assert!(
+            app.take_requests().contains(&Request::CancelSearch),
+            "a search nobody is watching should stop"
+        );
+    }
+
+    #[test]
+    fn the_results_take_the_keys_while_they_are_open() {
+        let mut app = loaded_app();
+        app.handle_key(alt(KeyCode::F(7)));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+
+        app.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(app.active, 0, "Tab didn't reach the panels");
     }
 
     #[test]

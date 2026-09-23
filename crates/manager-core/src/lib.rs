@@ -19,6 +19,7 @@ mod error;
 pub mod jobs;
 mod local;
 mod router;
+pub mod search;
 mod sort;
 mod vfs;
 pub mod view;

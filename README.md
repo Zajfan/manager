@@ -25,6 +25,7 @@ cargo test --workspace            # run all tests
 | Tab | Switch panel |
 | Insert or Space | Mark |
 | F3 | View the file under the cursor (works inside archives too) |
+| Alt+F7 | Find files by name, and optionally by what's in them |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
 | Alt+H or Alt+. | Show / hide hidden files |
 | Ctrl+R | Reload (panels also refresh themselves when the folder changes) |
@@ -53,6 +54,8 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-core/src/archive/` | Reading ZIP and TAR archives as folders: the tree index, the format readers, and the `Vfs` over them |
 | `crates/manager-core/src/router.rs` | Picks the backend for a path — the disk, or the inside of an archive |
 | `crates/manager-core/src/view.rs` | Deciding what a file is, decoding it, and laying it out in lines |
+| `crates/manager-core/src/search/` | File masks, searching inside files, and walking a tree looking for both |
+| `crates/manager-tui/src/results.rs` | The list of what a search found |
 | `crates/manager-tui/src/viewer.rs` | F3: the state of the full-screen viewer and what its keys do |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
@@ -75,6 +78,19 @@ for older single-byte text, and anything containing a zero byte opens as hex.
 A file is read up to 8 MiB; a longer one is shown from the start and says so in
 the title bar. Scrolling through the whole of a very large file needs windowed
 reading, which is still to come.
+
+## Finding files
+
+Alt+F7 searches the folder the active panel is showing, and everything below it.
+
+| Field | What it takes |
+|---|---|
+| Named | `*.md`, several at once with `;`, and what to leave out after `\|` — `*.rs\|test_*` |
+| Containing | Optional. Text that has to appear inside the file |
+
+`Alt+C` matches case, `Alt+H` looks in hidden files and folders. Results arrive
+while the search is still running; Enter takes the panel to the file, Esc stops.
+Because it goes through the same `Vfs`, it searches inside archives too.
 
 ## Archives
 

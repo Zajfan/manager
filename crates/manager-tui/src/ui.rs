@@ -10,13 +10,19 @@ use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row as TableRo
 
 use crate::app::{App, Dialog, Focus, JobView, Panel, Question, Row, Status};
 use crate::format;
+use crate::results::Results;
 use crate::viewer::{Mode, Viewer};
 
 /// Below this width the date column is dropped (phones in Termux, split terminals).
 const NARROW: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    // The viewer covers everything: you are looking at a file, not at folders.
+    // A search's results cover everything, as does the viewer: in both cases
+    // you are looking at something other than the two folders.
+    if let Some(results) = app.results.as_mut() {
+        draw_results(frame, results);
+        return;
+    }
     if let Some(viewer) = app.viewer.as_mut() {
         draw_viewer(frame, viewer);
         return;
@@ -70,6 +76,66 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .unwrap_or_default();
         draw_question(frame, question, title);
     }
+}
+
+/// The full-screen list of what a search found.
+fn draw_results(frame: &mut Frame, results: &mut Results) {
+    let [title, body, status, keys] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    results.fit(usize::from(body.height).max(1));
+    let bar = Style::new().bg(Color::Blue).fg(Color::White);
+    frame.render_widget(
+        Paragraph::new(format!(" Find: {}", results.summary)).style(bar),
+        title,
+    );
+
+    let selected = results.selected_row();
+    let lines: Vec<Line> = if results.hits.is_empty() {
+        vec![Line::from(
+            if results.running {
+                "Searching..."
+            } else {
+                "Nothing found"
+            }
+            .dim(),
+        )]
+    } else {
+        results
+            .visible()
+            .iter()
+            .enumerate()
+            .map(|(row, entry)| {
+                // The folder matters as much as the name in a list of hits.
+                let where_ = entry
+                    .path
+                    .parent()
+                    .map(|p| p.to_string())
+                    .unwrap_or_default();
+                let line = Line::from(vec![
+                    Span::raw(entry.name.clone()).bold(),
+                    Span::raw("  "),
+                    Span::raw(where_).dim(),
+                ]);
+                if row == selected {
+                    line.style(Style::new().bg(Color::Blue).fg(Color::White))
+                } else {
+                    line
+                }
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(results.status()), status);
+    frame.render_widget(
+        Paragraph::new("Enter go to file   ↑↓ PgUp PgDn Home End   EscClose").style(bar),
+        keys,
+    );
 }
 
 /// F3's full-screen view of one file.
@@ -396,6 +462,32 @@ fn question_job(question: &Question) -> Option<JobId> {
 
 fn draw_dialog(frame: &mut Frame, dialog: &Dialog) {
     match dialog {
+        Dialog::Find {
+            mask,
+            text,
+            on_text,
+            case_sensitive,
+            include_hidden,
+        } => {
+            let cursor = |mine: bool| if mine { "█" } else { "" };
+            let tick = |on: &bool| if *on { "[x]" } else { "[ ]" };
+            popup(
+                frame,
+                " Find files ",
+                vec![
+                    Line::from(format!("Named:      {mask}{}", cursor(!on_text))),
+                    Line::from(format!("Containing: {text}{}", cursor(*on_text))),
+                    Line::from(""),
+                    Line::from(format!(
+                        "{} Alt+C match case    {} Alt+H search hidden",
+                        tick(case_sensitive),
+                        tick(include_hidden)
+                    )),
+                ],
+                " Tab next field · Enter search · Esc cancel ",
+                Color::Yellow,
+            )
+        }
         Dialog::MkDir { input } => popup(
             frame,
             " New folder ",
@@ -641,6 +733,59 @@ mod tests {
         let screen = render(&mut app, 80, 20);
 
         assert!(screen.contains("permission denied"), "{screen}");
+    }
+
+    #[test]
+    fn the_find_dialog_shows_both_fields_and_the_switches() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("Find files"), "{screen}");
+        assert!(screen.contains("Named:"), "{screen}");
+        assert!(screen.contains("Containing:"), "{screen}");
+        assert!(screen.contains("Alt+C match case"), "{screen}");
+    }
+
+    #[test]
+    fn the_results_list_shows_hits_and_where_they_are() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let found = crate::app::tests::entry(
+            &crate::app::tests::vp("/home/docs"),
+            "guide.md",
+            EntryKind::File,
+            10,
+        );
+        app.on_msg(crate::app::Msg::SearchFound(Box::new(found)));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("guide.md"), "{screen}");
+        assert!(screen.contains("docs"), "the folder it's in: {screen}");
+        assert!(screen.contains("Searching"), "{screen}");
+        assert!(!screen.contains("b.txt"), "the panels are hidden: {screen}");
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_says_so_rather_than_showing_a_blank() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::F(7), KeyModifiers::ALT));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_msg(crate::app::Msg::SearchFinished(
+            manager_core::search::SearchReport {
+                found: 0,
+                scanned: 12,
+                unreadable: 0,
+                cancelled: false,
+            },
+        ));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("Nothing found"), "{screen}");
     }
 
     #[test]

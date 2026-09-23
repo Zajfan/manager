@@ -5,6 +5,7 @@
 
 mod app;
 mod format;
+mod results;
 mod ui;
 mod viewer;
 
@@ -16,6 +17,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
+use manager_core::search::{SearchEvent, SearchHandle, run as search};
 use manager_core::watch::{Coalescer, WatchHandle, WatchSink};
 use manager_core::{Router, VPath, Vfs};
 use ratatui::DefaultTerminal;
@@ -154,6 +156,9 @@ struct Executor<'rt> {
     watch_gen: [u64; 2],
     watch_tx: Sender<WatchStarted>,
     watch_rx: Receiver<WatchStarted>,
+    /// The search that's running, and where its findings arrive.
+    search: Option<SearchHandle>,
+    search_rx: Option<UnboundedReceiver<SearchEvent>>,
 }
 
 /// A live file-system watch on the folder one panel is showing.
@@ -191,6 +196,8 @@ impl<'rt> Executor<'rt> {
             watch_gen: [0, 0],
             watch_tx,
             watch_rx,
+            search: None,
+            search_rx: None,
         }
     }
 
@@ -213,6 +220,13 @@ impl<'rt> Executor<'rt> {
                 result: vfs.create_dir(&path).await,
                 path,
             }),
+            Request::StartSearch(spec) => {
+                let _inside_runtime = self.runtime.enter();
+                let (tx, rx) = unbounded_channel();
+                self.search = Some(search::start(Arc::clone(&self.vfs), *spec, tx));
+                self.search_rx = Some(rx);
+            }
+            Request::CancelSearch => self.stop_search(),
             Request::ReadWindow { path, len } => self.spawn(async move |vfs| Msg::Viewed {
                 result: vfs.read_window(&path, 0, len).await,
                 path,
@@ -236,6 +250,39 @@ impl<'rt> Executor<'rt> {
                     }
                 }
             }
+        }
+    }
+
+    /// Stops the running search, if there is one.
+    fn stop_search(&mut self) {
+        if let Some(handle) = self.search.take() {
+            handle.cancel();
+        }
+        // Dropping the receiver also tells the search nobody is listening.
+        self.search_rx = None;
+    }
+
+    /// Hands over whatever the search has found since the last frame.
+    fn feed_search(&mut self, app: &mut App) {
+        let (Some(handle), Some(rx)) = (&self.search, &mut self.search_rx) else {
+            return;
+        };
+        app.on_msg(Msg::SearchProgress {
+            scanned: handle.scanned(),
+        });
+        let mut done = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SearchEvent::Found(entry) => app.on_msg(Msg::SearchFound(entry)),
+                SearchEvent::Finished(report) => {
+                    app.on_msg(Msg::SearchFinished(report));
+                    done = true;
+                }
+            }
+        }
+        if done {
+            self.search = None;
+            self.search_rx = None;
         }
     }
 
@@ -327,6 +374,7 @@ impl<'rt> Executor<'rt> {
         }
         self.collect_watches(app);
         self.poll_watches(app);
+        self.feed_search(app);
         for (&id, handle) in &self.jobs {
             app.on_msg(Msg::JobProgress {
                 id,
@@ -343,6 +391,7 @@ impl<'rt> Executor<'rt> {
 
     /// Cancels running jobs and gives them a moment to clean up their temp files.
     fn shutdown(&mut self) {
+        self.stop_search();
         for handle in self.jobs.values() {
             handle.cancel();
         }
