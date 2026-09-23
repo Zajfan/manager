@@ -208,10 +208,43 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 ## 9. Open decisions
 
 - ~~**License.**~~ Decided: **GPL-3.0-or-later** (see `LICENSE`).
-- **SolidJS vs. Svelte** for the GUI frontend – both fine; decide when starting step 6.
+- ~~**SolidJS vs. Svelte** for the GUI frontend.~~ Decided: **SolidJS**. Its components run
+  once and bind signals straight to DOM nodes, which suits a list that changes constantly
+  while the user scrolls, and JSX is the preferred syntax here. See "The GUI's shape" below.
 - **Project name.** `manager` is a placeholder.
 
-## 10. Prior art worth studying
+## 10. The GUI's shape (decided before step 6)
+
+**The frontend holds a viewport, not a model.**
+
+Tauri passes data between Rust and the frontend as JSON. A folder can easily hold 100,000
+entries, and sending all of them across on every sort or filter would cost tens of megabytes
+each time. So the frontend never receives a folder; it asks for the part it is showing:
+
+```
+    rows(view_id, from: 4200, count: 50) -> [Row; 50]
+```
+
+Which means virtualised scrolling and windowed IPC are the same mechanism — the scroll
+position *is* the query. With fixed-height rows this needs no measurement and no library:
+render the visible slice plus a little overscan, absolutely positioned.
+
+**Rust owns the model**: the listing, the sort order, the filter, and which entries are
+marked. Not because Rust is faster, though it is, but because:
+
+- `sort_entries` already exists and is tested. A second implementation in JavaScript would
+  be a second source of truth, and the two would drift.
+- A frontend holding only a viewport *cannot* sort. It doesn't have the data.
+- Folders-first, natural ordering (`img2` before `img10`) and locale collation are fiddly
+  enough to be worth getting right once.
+
+The frontend's job is to draw rows and send keys. That is deliberately the same job
+`manager-tui` gives its drawing code, which is why `manager-tui/src/app.rs` — panel state,
+sorting, marking, dialogs, job wiring, all of it terminal-free and unit-tested — is most of
+a shared view model already. Expect to lift it into a `manager-ui` crate when the GUI
+starts, rather than writing the same logic twice.
+
+## 11. Prior art worth studying
 
 - **Total Commander** (the inspiration, closed source) · **Double Commander** (open-source TC clone, Pascal/Lazarus)
 - **Midnight Commander** (classic TUI) · **yazi**, **broot**, **xplr** (modern Rust TUIs)
