@@ -552,6 +552,41 @@ fn question_job(question: &Question) -> Option<JobId> {
 
 fn draw_dialog(frame: &mut Frame, dialog: &Dialog) {
     match dialog {
+        Dialog::Connect {
+            host,
+            port,
+            username,
+            password,
+            field,
+        } => {
+            use crate::app::ConnectField;
+            let cursor = |mine: bool| if mine { "\u{2588}" } else { "" };
+            let masked: String = "*".repeat(password.chars().count());
+            popup(
+                frame,
+                " Connect to SFTP server ",
+                vec![
+                    Line::from(format!(
+                        "Host:     {host}{}",
+                        cursor(*field == ConnectField::Host)
+                    )),
+                    Line::from(format!(
+                        "Port:     {port}{}",
+                        cursor(*field == ConnectField::Port)
+                    )),
+                    Line::from(format!(
+                        "Username: {username}{}",
+                        cursor(*field == ConnectField::Username)
+                    )),
+                    Line::from(format!(
+                        "Password: {masked}{}",
+                        cursor(*field == ConnectField::Password)
+                    )),
+                ],
+                " Tab next field \u{b7} Enter connect \u{b7} Esc cancel ",
+                Color::Yellow,
+            )
+        }
         Dialog::CompareDirs {
             by_content,
             include_hidden,
@@ -844,6 +879,41 @@ mod tests {
         let screen = render(&mut app, 80, 20);
 
         assert!(screen.contains("permission denied"), "{screen}");
+    }
+
+    #[test]
+    fn the_connect_dialog_shows_all_four_fields() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("Connect to SFTP server"), "{screen}");
+        assert!(screen.contains("Host:"), "{screen}");
+        assert!(screen.contains("Port:"), "{screen}");
+        assert!(screen.contains("22"), "the default port: {screen}");
+        assert!(screen.contains("Username:"), "{screen}");
+        assert!(screen.contains("Password:"), "{screen}");
+    }
+
+    #[test]
+    fn a_typed_password_is_masked_on_screen() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        }
+        for c in "secret".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(
+            !screen.contains("secret"),
+            "the password leaked onto the screen: {screen}"
+        );
+        assert!(screen.contains("******"), "{screen}");
     }
 
     #[test]

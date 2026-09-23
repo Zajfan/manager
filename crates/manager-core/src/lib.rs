@@ -19,6 +19,7 @@ mod entry;
 mod error;
 pub mod jobs;
 mod local;
+pub mod remote;
 mod router;
 pub mod search;
 mod sort;

@@ -27,6 +27,7 @@ cargo test --workspace            # run all tests
 | F3 | View the file under the cursor (works inside archives too) |
 | Alt+F7 | Find files by name, and optionally by what's in them |
 | Ctrl+F9 | Compare the two panels' folders, and sync what differs |
+| Ctrl+N | Connect to an SFTP server |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
 | Alt+H or Alt+. | Show / hide hidden files |
 | Ctrl+R | Reload (panels also refresh themselves when the folder changes) |
@@ -59,6 +60,7 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-tui/src/results.rs` | The list of what a search found |
 | `crates/manager-core/src/compare/` | Comparing two folder trees (by metadata or by BLAKE3 hash) and planning a sync |
 | `crates/manager-tui/src/compare.rs` | The compare view: differences, marking, and turning `>`/`<`/`U` into jobs |
+| `crates/manager-core/src/remote/` | An SFTP `Vfs`: the SSH handshake, host-key checking, and the connection pool |
 | `crates/manager-tui/src/viewer.rs` | F3: the state of the full-screen viewer and what its keys do |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
@@ -118,6 +120,28 @@ A file and a folder that happen to share a name (`?` in the list) can't be
 synced automatically; that's a call for a person to make. Because it's built
 on the same `Vfs`, comparing and syncing both work with an archive as either
 side.
+
+## SFTP
+
+Ctrl+N asks for a host, port, username and password, then connects the active
+panel to it. From there it's an ordinary folder: browse it, copy in or out of
+it, view a file, search it, compare it against a local folder — everything
+above works the same way, because it's all built on the same `Vfs`.
+
+The server's host key is checked and remembered in `~/.ssh/known_hosts`,
+exactly like `ssh` and `scp` do. A key that's changed since the last
+connection is refused, not silently accepted.
+
+**Password and private-key authentication both work** (the connect dialog
+currently only asks for a password; a key file can be used by calling
+`manager_core::remote::Auth::KeyFile` directly, but nothing in the TUI offers
+it yet). A dropped connection doesn't prompt you again mid-copy — a job just
+reports the error, the same way a permissions problem would; reconnect with
+Ctrl+N and retry.
+
+Not yet covered: watching a remote folder for changes (there's no such thing
+in plain SFTP), and anything other than `sftp://` — FTP, WebDAV and cloud
+storage are still on the roadmap.
 
 ## Archives
 

@@ -47,6 +47,20 @@ pub enum Error {
     #[error("cancelled")]
     Cancelled,
 
+    /// A path on a server nothing has connected to yet, or the connection to
+    /// it was lost. Distinct from every other error so the UI can say
+    /// exactly what to do about it: connect (or reconnect).
+    #[error("not connected to {0}: use Ctrl+N to connect")]
+    NotConnected(VPath),
+
+    /// Connecting to a server failed: the network, the handshake, a wrong
+    /// password, or its host key not matching the one we saw last time.
+    #[error("couldn't connect to {authority}: {message}")]
+    Remote {
+        authority: Box<str>,
+        message: Box<str>,
+    },
+
     /// Text that can't be turned into a valid [`VPath`] or file name.
     #[error("invalid path: {0}")]
     InvalidPath(String),

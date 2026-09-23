@@ -18,6 +18,8 @@ flate2.workspace = true
 # reading an entry can seek instead of decompressing from the start again.
 tempfile.workspace = true
 blake3.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
@@ -26,5 +28,6 @@ tokio.workspace = true
 trash.workspace = true
 
 [dev-dependencies]
+anyhow = "1"
 tempfile.workspace = true
 blake3.workspace = true

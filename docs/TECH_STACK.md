@@ -200,7 +200,12 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    - ✅ F3 in the terminal: text with encoding detection, hex, wrapping. Reads through
      the `Vfs`, so it works inside archives with no extra code.
    - Images, PDF and media wait for the GUI, where the webview renders them.
-8. **Remote** – SFTP, then cloud via OpenDAL.
+8. ✅ **Remote** – SFTP via `russh`/`russh-sftp` (pure Rust, no OpenSSL — matters for the
+   mobile builds later). Host keys are checked and remembered in `~/.ssh/known_hosts`, the
+   way every other SSH tool does; a changed key is refused, not silently accepted.
+   Tested against a real (if small) SFTP server the test suite runs itself, both over an
+   in-process pipe and a real loopback TCP socket — no external service needed, consistent
+   with how everything else in this project is tested. Cloud via OpenDAL is still to come.
 9. **Search & compare** – content search, folder compare/sync, duplicate finder.
    - ✅ Alt+F7: masks (`*.md;*.txt`, exclusions after `|`), text inside files, hidden files
      on or off, results while it runs, cancel. Searches archives too, being a `Vfs` walk.

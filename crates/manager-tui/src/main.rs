@@ -146,7 +146,7 @@ fn run(terminal: &mut DefaultTerminal, runtime: &Runtime, mut app: App) -> std::
 /// results back to it.
 struct Executor<'rt> {
     runtime: &'rt Runtime,
-    vfs: Arc<dyn Vfs>,
+    vfs: Arc<Router>,
     msg_tx: Sender<Msg>,
     msg_rx: Receiver<Msg>,
     job_tx: UnboundedSender<JobEvent>,
@@ -230,17 +230,31 @@ impl<'rt> Executor<'rt> {
             Request::StartSearch(spec) => {
                 let _inside_runtime = self.runtime.enter();
                 let (tx, rx) = unbounded_channel();
-                self.search = Some(search::start(Arc::clone(&self.vfs), *spec, tx));
+                self.search = Some(search::start(self.vfs_dyn(), *spec, tx));
                 self.search_rx = Some(rx);
             }
             Request::CancelSearch => self.stop_search(),
             Request::StartCompare(spec) => {
                 let _inside_runtime = self.runtime.enter();
                 let (tx, rx) = unbounded_channel();
-                self.compare = Some(compare_run::start(Arc::clone(&self.vfs), *spec, tx));
+                self.compare = Some(compare_run::start(self.vfs_dyn(), *spec, tx));
                 self.compare_rx = Some(rx);
             }
             Request::CancelCompare => self.stop_compare(),
+            Request::Connect {
+                authority,
+                host,
+                port,
+                username,
+                auth,
+            } => {
+                let vfs = Arc::clone(&self.vfs);
+                let tx = self.msg_tx.clone();
+                self.runtime.spawn(async move {
+                    let result = vfs.connect(&authority, &host, port, &username, &auth).await;
+                    let _ = tx.send(Msg::Connected { authority, result });
+                });
+            }
             Request::ReadWindow { path, len } => self.spawn(async move |vfs| Msg::Viewed {
                 result: vfs.read_window(&path, 0, len).await,
                 path,
@@ -248,7 +262,7 @@ impl<'rt> Executor<'rt> {
             Request::Watch { panel, dir } => self.watch(panel, dir),
             Request::StartJob(spec) => {
                 let _inside_runtime = self.runtime.enter();
-                let handle = jobs::start(Arc::clone(&self.vfs), spec, self.job_tx.clone());
+                let handle = jobs::start(self.vfs_dyn(), spec, self.job_tx.clone());
                 app.on_msg(Msg::JobStarted {
                     id: handle.id(),
                     title: handle.title().to_string(),
@@ -397,6 +411,14 @@ impl<'rt> Executor<'rt> {
                 app.on_msg(Msg::DirChanged { panel });
             }
         }
+    }
+
+    /// `self.vfs` widened to a trait object, for code that has to work with
+    /// any `Vfs` rather than specifically a `Router` (the job engine, search,
+    /// comparison — all written once, against the trait, long before this
+    /// backend existed).
+    fn vfs_dyn(&self) -> Arc<dyn Vfs> {
+        Arc::clone(&self.vfs) as Arc<dyn Vfs>
     }
 
     /// Runs one piece of disk work in the background and posts its result.

@@ -14,6 +14,7 @@ use manager_core::jobs::{
     ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent, JobId,
     JobReport, JobSpec, Outcome, Progress,
 };
+use manager_core::remote::Auth;
 use manager_core::search::{Masks, Needle, SearchReport, SearchSpec};
 use manager_core::{Entry, Result, SortKey, SortOrder, SortSpec, VPath, sort_entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -46,6 +47,14 @@ pub enum Request {
     StartCompare(Box<CompareSpec>),
     /// Stop the comparison that's running, if any.
     CancelCompare,
+    /// Connect to an SFTP server.
+    Connect {
+        authority: String,
+        host: String,
+        port: u16,
+        username: String,
+        auth: Auth,
+    },
     /// Read the start of `path` for the viewer.
     ReadWindow {
         path: VPath,
@@ -99,6 +108,11 @@ pub enum Msg {
         scanned: u64,
     },
     CompareFinished(CompareReport),
+    /// A connection attempt finished, one way or the other.
+    Connected {
+        authority: String,
+        result: manager_core::Result<VPath>,
+    },
     /// The bytes the viewer asked for, or why they couldn't be read.
     Viewed {
         path: VPath,
@@ -150,6 +164,14 @@ pub enum Dialog {
         sources: Vec<VPath>,
         input: String,
     },
+    /// Ctrl+N: an SFTP server to connect to.
+    Connect {
+        host: String,
+        port: String,
+        username: String,
+        password: String,
+        field: ConnectField,
+    },
     /// Ctrl+F9: which two folders, compared which way?
     CompareDirs {
         by_content: bool,
@@ -169,6 +191,26 @@ pub enum Dialog {
         targets: Vec<VPath>,
         permanent: bool,
     },
+}
+
+/// Which field of the connect dialog is being typed into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectField {
+    Host,
+    Port,
+    Username,
+    Password,
+}
+
+impl ConnectField {
+    fn next(self) -> ConnectField {
+        match self {
+            ConnectField::Host => ConnectField::Port,
+            ConnectField::Port => ConnectField::Username,
+            ConnectField::Username => ConnectField::Password,
+            ConnectField::Password => ConnectField::Host,
+        }
+    }
 }
 
 /// A running job as the UI sees it.
@@ -493,6 +535,13 @@ impl App {
                     compare.finished(report);
                 }
             }
+            Msg::Connected { authority, result } => match result {
+                Ok(landing) => {
+                    self.status = Some(Status::Info(format!("Connected to {authority}")));
+                    self.load(self.active, landing, None);
+                }
+                Err(err) => self.status = Some(Status::Error(err.to_string())),
+            },
             Msg::DirChanged { panel } => self.reload(panel),
             Msg::WatchFailed { panel, error } => {
                 // Not fatal: the panel just won't notice changes made by other
@@ -628,6 +677,7 @@ impl App {
             KeyCode::F(5) => self.open_transfer(false),
             KeyCode::F(6) => self.open_transfer(true),
             KeyCode::F(9) if ctrl => self.open_compare(),
+            KeyCode::Char('n') if ctrl => self.open_connect(),
             KeyCode::F(7) if alt => self.open_find(),
             KeyCode::F(7) => {
                 self.dialog = Some(Dialog::MkDir {
@@ -808,6 +858,58 @@ impl App {
             return;
         }
 
+        // The connect dialog has four fields, cycled with Tab.
+        if let Dialog::Connect {
+            host,
+            port,
+            username,
+            password,
+            field,
+        } = dialog
+        {
+            match key.code {
+                KeyCode::Tab | KeyCode::Down => *field = field.next(),
+                KeyCode::BackTab | KeyCode::Up => {
+                    // Three `next()`s is "one back" in a four-item ring.
+                    *field = field.next().next().next();
+                }
+                KeyCode::Backspace => {
+                    let text = match field {
+                        ConnectField::Host => host,
+                        ConnectField::Port => port,
+                        ConnectField::Username => username,
+                        ConnectField::Password => password,
+                    };
+                    text.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    match field {
+                        ConnectField::Host => host.push(c),
+                        // A port is digits only — anything else is quietly refused,
+                        // the same way a numeric spinner would refuse a letter.
+                        ConnectField::Port if c.is_ascii_digit() => port.push(c),
+                        ConnectField::Port => {}
+                        ConnectField::Username => username.push(c),
+                        ConnectField::Password => password.push(c),
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(Dialog::Connect {
+                        host,
+                        port,
+                        username,
+                        password,
+                        ..
+                    }) = self.dialog.take()
+                    {
+                        self.start_connect(&host, &port, &username, password);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // The compare dialog is just two switches.
         if let Dialog::CompareDirs {
             by_content,
@@ -945,6 +1047,32 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Ctrl+N: ask which server to connect to.
+    fn open_connect(&mut self) {
+        self.dialog = Some(Dialog::Connect {
+            host: String::new(),
+            port: "22".into(),
+            username: String::new(),
+            password: String::new(),
+            field: ConnectField::Host,
+        });
+    }
+
+    fn start_connect(&mut self, host: &str, port: &str, username: &str, password: String) {
+        let host = host.trim().to_string();
+        let username = username.trim().to_string();
+        let port: u16 = port.trim().parse().unwrap_or(22);
+        let authority = format!("{username}@{host}:{port}");
+        self.status = Some(Status::Info(format!("Connecting to {authority}...")));
+        self.requests.push(Request::Connect {
+            authority,
+            host,
+            port,
+            username,
+            auth: Auth::Password(password),
+        });
     }
 
     /// Ctrl+F9: start comparing the left panel against the right one.
@@ -1352,6 +1480,182 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn connect_requests(app: &mut App) -> Vec<Request> {
+        app.take_requests()
+            .into_iter()
+            .filter(|r| matches!(r, Request::Connect { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_n_opens_the_connect_dialog() {
+        let mut app = loaded_app();
+
+        app.handle_key(ctrl(KeyCode::Char('n')));
+
+        assert!(matches!(app.dialog, Some(Dialog::Connect { .. })));
+    }
+
+    #[test]
+    fn the_connect_dialog_defaults_to_port_22() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+
+        let Some(Dialog::Connect { port, .. }) = &app.dialog else {
+            panic!("dialog didn't open");
+        };
+        assert_eq!(port, "22");
+    }
+
+    #[test]
+    fn typing_fills_the_field_that_is_focused_and_tab_moves_on() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+
+        type_in(&mut app, "example.com");
+        app.handle_key(key(KeyCode::Tab));
+        // A default "22" is already there; clear it before typing a new one.
+        app.handle_key(key(KeyCode::Backspace));
+        app.handle_key(key(KeyCode::Backspace));
+        type_in(&mut app, "2222");
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "erik");
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "hunter2");
+
+        let Some(Dialog::Connect {
+            host,
+            port,
+            username,
+            password,
+            field,
+        }) = &app.dialog
+        else {
+            panic!("dialog didn't open");
+        };
+        assert_eq!(host, "example.com");
+        assert_eq!(port, "2222");
+        assert_eq!(username, "erik");
+        assert_eq!(password, "hunter2");
+        assert_eq!(*field, ConnectField::Password);
+    }
+
+    #[test]
+    fn a_port_field_only_accepts_digits() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Tab)); // onto Port, which already holds "22"
+
+        type_in(&mut app, "x9y");
+
+        let Some(Dialog::Connect { port, .. }) = &app.dialog else {
+            panic!("dialog didn't open");
+        };
+        assert_eq!(port, "229", "the letters were refused, the digit wasn't");
+    }
+
+    #[test]
+    fn shift_tab_and_up_cycle_backwards() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Tab)); // Host -> Port
+        app.handle_key(key(KeyCode::BackTab)); // Port -> Host
+
+        let Some(Dialog::Connect { field, .. }) = &app.dialog else {
+            panic!("dialog didn't open");
+        };
+        assert_eq!(*field, ConnectField::Host);
+    }
+
+    #[test]
+    fn enter_starts_connecting_and_closes_the_dialog() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+        type_in(&mut app, "example.com");
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "erik");
+        app.handle_key(key(KeyCode::Tab));
+        type_in(&mut app, "hunter2");
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(app.dialog.is_none());
+        let requests = connect_requests(&mut app);
+        assert_eq!(requests.len(), 1);
+        let Request::Connect {
+            authority,
+            host,
+            port,
+            username,
+            auth,
+        } = &requests[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(authority, "erik@example.com:22");
+        assert_eq!(host, "example.com");
+        assert_eq!(*port, 22);
+        assert_eq!(username, "erik");
+        assert_eq!(*auth, Auth::Password("hunter2".into()));
+    }
+
+    #[test]
+    fn esc_closes_the_connect_dialog_without_connecting() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('n')));
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.dialog.is_none());
+        assert!(connect_requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn a_successful_connection_navigates_the_active_panel_there() {
+        let mut app = loaded_app();
+        app.on_msg(Msg::Connected {
+            authority: "erik@example.com:22".into(),
+            result: Ok(VPath::remote("sftp", "erik@example.com:22", "/home/erik").unwrap()),
+        });
+
+        let loads: Vec<_> = app
+            .take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Load { panel, path, .. } => Some((panel, path)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            loads,
+            [(
+                0,
+                VPath::remote("sftp", "erik@example.com:22", "/home/erik").unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_connection_is_reported_without_navigating_anywhere() {
+        let mut app = loaded_app();
+
+        app.on_msg(Msg::Connected {
+            authority: "erik@example.com:22".into(),
+            result: Err(Error::Remote {
+                authority: "erik@example.com:22".into(),
+                message: "the username or password was refused".into(),
+            }),
+        });
+
+        assert!(matches!(app.status, Some(Status::Error(_))));
+        assert!(
+            app.take_requests()
+                .iter()
+                .all(|r| !matches!(r, Request::Load { .. }))
+        );
     }
 
     #[test]

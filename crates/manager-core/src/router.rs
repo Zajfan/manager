@@ -5,7 +5,9 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 
+use crate::remote::{Auth, RemoteFs};
 use crate::vfs::{ReadStream, WriteStream};
+use crate::vpath::Base;
 use crate::watch::{WatchHandle, WatchSink};
 use crate::{ArchiveFs, Capabilities, Entry, LocalFs, Permissions, Result, VPath, Vfs};
 
@@ -15,10 +17,11 @@ use crate::{ArchiveFs, Capabilities, Entry, LocalFs, Permissions, Result, VPath,
 /// path goes to the disk, a path with archive layers goes inside the archive.
 /// Because everything else — the job engine included — only sees one `Vfs`,
 /// copying a file out of a ZIP is the same code as copying between folders.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Router {
     local: LocalFs,
     archives: ArchiveFs,
+    remote: RemoteFs,
 }
 
 impl Router {
@@ -28,11 +31,51 @@ impl Router {
 
     /// The backend that owns `path`.
     fn pick(&self, path: &VPath) -> &dyn Vfs {
-        if path.layers().is_empty() {
-            &self.local
-        } else {
-            &self.archives
+        if !path.layers().is_empty() {
+            return &self.archives;
         }
+        match path.base() {
+            Base::Local(_) => &self.local,
+            Base::Remote { .. } => &self.remote,
+        }
+    }
+
+    /// Connects to an SFTP server and remembers it under `authority`
+    /// (`user@host:port`, the same form a `sftp://` `VPath` carries), so
+    /// every path with that authority can be used right after this returns.
+    pub async fn connect(
+        &self,
+        authority: &str,
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: &Auth,
+    ) -> Result<VPath> {
+        self.remote
+            .connect(authority, host, port, username, auth)
+            .await
+    }
+
+    /// The same, but over a stream that's already open. See
+    /// [`RemoteFs::connect_stream`] — used only by tests.
+    pub async fn connect_stream<S>(
+        &self,
+        authority: &str,
+        stream: S,
+        username: &str,
+        auth: &Auth,
+    ) -> Result<VPath>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        self.remote
+            .connect_stream(authority, stream, "test-server", 22, username, auth)
+            .await
+    }
+
+    /// Whether `authority` already has a connection open.
+    pub fn is_connected(&self, authority: &str) -> bool {
+        self.remote.is_connected(authority)
     }
 }
 
@@ -75,9 +118,15 @@ impl Vfs for Router {
     /// Renaming only ever happens within one backend. Anything else is
     /// reported as a move between devices, which makes the job engine fall
     /// back to copying and then deleting — the only way to cross a boundary.
+    /// (Two SFTP paths on different servers get this same treatment: whether
+    /// their authorities actually match is `RemoteFs`'s own call to make.)
     async fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
-        if from.layers().is_empty() && to.layers().is_empty() {
-            return self.local.rename(from, to).await;
+        let same_kind = matches!(
+            (from.base(), to.base()),
+            (Base::Local(_), Base::Local(_)) | (Base::Remote { .. }, Base::Remote { .. })
+        );
+        if from.layers().is_empty() && to.layers().is_empty() && same_kind {
+            return self.pick(from).rename(from, to).await;
         }
         Err(crate::Error::CrossesDevices(from.clone()))
     }

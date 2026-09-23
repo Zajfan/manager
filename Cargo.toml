@@ -27,5 +27,7 @@ tar = "0.4"
 # The default backend is pure Rust, which keeps cross-compiling simple.
 flate2 = "1"
 blake3 = "1"
+russh = "0.63"
+russh-sftp = "3"
 manager-core = { path = "crates/manager-core" }
 trash = "5"
