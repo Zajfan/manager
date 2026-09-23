@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row as TableRo
 
 use crate::app::{App, Dialog, Focus, JobView, Panel, Question, Row, Status};
 use crate::compare::Compare;
+use crate::duplicates::{Duplicates, Row as DupRow};
 use crate::format;
 use crate::results::Results;
 use crate::viewer::{Mode, Viewer};
@@ -21,6 +22,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // A folder comparison's results, a search's results, and the viewer all
     // cover everything: in each case you're looking at something other than
     // the two folders.
+    if let Some(duplicates) = app.duplicates.as_mut() {
+        draw_duplicates(frame, duplicates);
+        return;
+    }
     if let Some(compare) = app.compare.as_mut() {
         draw_compare(frame, compare);
         return;
@@ -142,6 +147,88 @@ fn draw_results(frame: &mut Frame, results: &mut Results) {
         Paragraph::new("Enter go to file   ↑↓ PgUp PgDn Home End   EscClose").style(bar),
         keys,
     );
+}
+
+/// The full-screen list of what the duplicate finder found.
+fn draw_duplicates(frame: &mut Frame, duplicates: &mut Duplicates) {
+    let [title, body, status, keys] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    duplicates.fit(usize::from(body.height).max(1));
+    let bar = Style::new().bg(Color::Blue).fg(Color::White);
+    frame.render_widget(
+        Paragraph::new(format!(" Duplicates: {}", duplicates.summary)).style(bar),
+        title,
+    );
+
+    let selected = duplicates.selected_row();
+    let lines: Vec<Line> = if duplicates.visible().is_empty() {
+        vec![Line::from(
+            if duplicates.running {
+                "Looking..."
+            } else {
+                "No duplicates found"
+            }
+            .dim(),
+        )]
+    } else {
+        duplicates
+            .visible()
+            .iter()
+            .enumerate()
+            .map(|(row, entry)| duplicate_line(duplicates, row, entry, row == selected))
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(duplicates.status()), status);
+    frame.render_widget(
+        Paragraph::new("Space mark  K keep 1st  D delete marked  Esc close").style(bar),
+        keys,
+    );
+}
+
+fn duplicate_line(
+    duplicates: &Duplicates,
+    visible_row: usize,
+    row: &DupRow,
+    is_selected: bool,
+) -> Line<'static> {
+    let line = match row {
+        DupRow::GroupStart { size } => Line::from(format!(
+            "\u{2500}\u{2500} {} each \u{2500}\u{2500}",
+            format::size_with_unit(*size)
+        ))
+        .dim(),
+        DupRow::File(entry) => {
+            let absolute = duplicates.first_visible_index() + visible_row;
+            let mark = if duplicates.is_marked(absolute) {
+                "*"
+            } else {
+                " "
+            };
+            let where_ = entry
+                .path
+                .parent()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            Line::from(vec![
+                Span::raw(format!("{mark} ")),
+                Span::raw(entry.name.clone()).bold(),
+                Span::raw("  "),
+                Span::raw(where_).dim(),
+            ])
+        }
+    };
+    if is_selected {
+        line.style(Style::new().bg(Color::Blue).fg(Color::White))
+    } else {
+        line
+    }
 }
 
 /// The full-screen list of what a folder comparison found.
@@ -552,6 +639,26 @@ fn question_job(question: &Question) -> Option<JobId> {
 
 fn draw_dialog(frame: &mut Frame, dialog: &Dialog) {
     match dialog {
+        Dialog::FindDuplicates {
+            mask,
+            include_hidden,
+        } => {
+            let tick = |on: &bool| if *on { "[x]" } else { "[ ]" };
+            popup(
+                frame,
+                " Find duplicate files ",
+                vec![
+                    Line::from(format!("Named: {mask}\u{2588}")),
+                    Line::from(""),
+                    Line::from(format!(
+                        "{} Alt+H search hidden files too",
+                        tick(include_hidden)
+                    )),
+                ],
+                " Enter search \u{b7} Esc cancel ",
+                Color::Yellow,
+            )
+        }
         Dialog::Connect {
             host,
             port,
@@ -967,6 +1074,54 @@ mod tests {
         let screen = render(&mut app, 80, 20);
 
         assert!(screen.contains("Nothing found"), "{screen}");
+    }
+
+    #[test]
+    fn the_find_duplicates_dialog_shows_its_field_and_switch() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("Find duplicate files"), "{screen}");
+        assert!(screen.contains("Named:"), "{screen}");
+        assert!(screen.contains("Alt+H search hidden"), "{screen}");
+    }
+
+    #[test]
+    fn the_duplicates_view_shows_a_group_heading_and_its_files() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let group = manager_core::duplicates::DuplicateGroup {
+            size: 2048,
+            hash: blake3::hash(b"not asserted on"),
+            files: vec![
+                crate::app::tests::entry(
+                    &crate::app::tests::vp("/home"),
+                    "one.bin",
+                    EntryKind::File,
+                    2048,
+                ),
+                crate::app::tests::entry(
+                    &crate::app::tests::vp("/home"),
+                    "two.bin",
+                    EntryKind::File,
+                    2048,
+                ),
+            ],
+        };
+        app.on_msg(crate::app::Msg::DuplicateFound(Box::new(group)));
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("one.bin"), "{screen}");
+        assert!(screen.contains("two.bin"), "{screen}");
+        assert!(
+            screen.contains("2.0K") || screen.contains("2048"),
+            "{screen}"
+        );
+        assert!(!screen.contains("b.txt"), "the panels are hidden: {screen}");
     }
 
     #[test]

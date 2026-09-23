@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod compare;
+pub mod duplicates;
 mod entry;
 mod error;
 pub mod jobs;

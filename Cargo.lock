@@ -1538,6 +1538,7 @@ dependencies = [
 name = "manager-tui"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chrono",
  "manager-core",
  "ratatui",

@@ -213,7 +213,10 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
      right→left, or whichever side is newer). Copy-only by design — nothing is ever deleted
      by a sync, and a file/folder name clash is left for a person to resolve. Reuses the
      existing job engine unchanged: every `SyncAction` is just a `JobSpec::Copy`.
-   - The duplicate finder is still to come.
+   - ✅ Ctrl+D: recursive, grouped by size then confirmed with a BLAKE3 hash so only
+     files that could plausibly match are ever read in full. `K` keeps one copy of
+     each group and marks the rest; deletion goes through the trash confirmation,
+     same as F8. Works inside archives too, being a `Vfs` walk like search and compare.
 10. **Mobile** – Android (SAF plugin) then iOS.
 11. **Plugins** – WASM plugin API.
 

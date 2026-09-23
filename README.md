@@ -28,6 +28,7 @@ cargo test --workspace            # run all tests
 | Alt+F7 | Find files by name, and optionally by what's in them |
 | Ctrl+F9 | Compare the two panels' folders, and sync what differs |
 | Ctrl+N | Connect to an SFTP server |
+| Ctrl+D | Find duplicate files in the active panel's folder |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
 | Alt+H or Alt+. | Show / hide hidden files |
 | Ctrl+R | Reload (panels also refresh themselves when the folder changes) |
@@ -61,6 +62,8 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-core/src/compare/` | Comparing two folder trees (by metadata or by BLAKE3 hash) and planning a sync |
 | `crates/manager-tui/src/compare.rs` | The compare view: differences, marking, and turning `>`/`<`/`U` into jobs |
 | `crates/manager-core/src/remote/` | An SFTP `Vfs`: the SSH handshake, host-key checking, and the connection pool |
+| `crates/manager-core/src/duplicates/` | Finding files with identical content: group by size, then confirm with a BLAKE3 hash |
+| `crates/manager-tui/src/duplicates.rs` | The duplicate-finder view: groups, marking, and turning `D` into a delete |
 | `crates/manager-tui/src/viewer.rs` | F3: the state of the full-screen viewer and what its keys do |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
@@ -149,6 +152,26 @@ where one is available on the machine running the tests (see
 test server — OpenSSH is well known to implement that one request backwards
 from what the SFTP spec says, and this project matches OpenSSH rather than
 the spec, because OpenSSH is what's actually out there.
+
+## Finding duplicate files
+
+Ctrl+D looks for files with identical content under the active panel's
+folder, all the way down. Files are grouped by size first — the cheap check —
+and only equal-sized files are actually read and hashed (BLAKE3), so a folder
+full of different-sized files costs almost nothing to scan.
+
+| Keys | Action |
+|---|---|
+| ↑ ↓ PgUp PgDn Home End | Move |
+| Space or Insert | Mark a file (or unmark it) — not the group heading above it |
+| K | Keep the first copy of every group, mark the rest |
+| D or Delete | Move the marked files (or the one under the cursor) to the trash |
+| Esc or F10 | Close (stops the search if it's still running) |
+
+Deleting asks first, the same confirmation F8 uses, and goes to the trash —
+never a permanent delete from here. A size two files happen to share doesn't
+make them duplicates; only a matching hash does, so a same-sized-but-different
+pair is never shown.
 
 ## Archives
 

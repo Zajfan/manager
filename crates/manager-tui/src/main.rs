@@ -5,6 +5,7 @@
 
 mod app;
 mod compare;
+mod duplicates;
 mod format;
 mod results;
 mod ui;
@@ -18,6 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use manager_core::compare::{CompareEvent, CompareHandle, run as compare_run};
+use manager_core::duplicates::{DuplicateEvent, DuplicateHandle, run as duplicates_run};
 use manager_core::jobs::{self, JobEvent, JobHandle, JobId};
 use manager_core::search::{SearchEvent, SearchHandle, run as search};
 use manager_core::watch::{Coalescer, WatchHandle, WatchSink};
@@ -164,6 +166,9 @@ struct Executor<'rt> {
     /// The comparison that's running, and where its findings arrive.
     compare: Option<CompareHandle>,
     compare_rx: Option<UnboundedReceiver<CompareEvent>>,
+    /// The duplicate search that's running, and where its findings arrive.
+    duplicates: Option<DuplicateHandle>,
+    duplicates_rx: Option<UnboundedReceiver<DuplicateEvent>>,
 }
 
 /// A live file-system watch on the folder one panel is showing.
@@ -205,6 +210,8 @@ impl<'rt> Executor<'rt> {
             search_rx: None,
             compare: None,
             compare_rx: None,
+            duplicates: None,
+            duplicates_rx: None,
         }
     }
 
@@ -241,6 +248,13 @@ impl<'rt> Executor<'rt> {
                 self.compare_rx = Some(rx);
             }
             Request::CancelCompare => self.stop_compare(),
+            Request::StartDuplicates(spec) => {
+                let _inside_runtime = self.runtime.enter();
+                let (tx, rx) = unbounded_channel();
+                self.duplicates = Some(duplicates_run::start(self.vfs_dyn(), *spec, tx));
+                self.duplicates_rx = Some(rx);
+            }
+            Request::CancelDuplicates => self.stop_duplicates(),
             Request::Connect {
                 authority,
                 host,
@@ -296,6 +310,38 @@ impl<'rt> Executor<'rt> {
             handle.cancel();
         }
         self.compare_rx = None;
+    }
+
+    /// Stops the running duplicate search, if there is one.
+    fn stop_duplicates(&mut self) {
+        if let Some(handle) = self.duplicates.take() {
+            handle.cancel();
+        }
+        self.duplicates_rx = None;
+    }
+
+    /// Hands over whatever the duplicate search has found since the last frame.
+    fn feed_duplicates(&mut self, app: &mut App) {
+        let (Some(handle), Some(rx)) = (&self.duplicates, &mut self.duplicates_rx) else {
+            return;
+        };
+        app.on_msg(Msg::DuplicateProgress {
+            scanned: handle.scanned(),
+        });
+        let mut done = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                DuplicateEvent::Found(group) => app.on_msg(Msg::DuplicateFound(group)),
+                DuplicateEvent::Finished(report) => {
+                    app.on_msg(Msg::DuplicateFinished(report));
+                    done = true;
+                }
+            }
+        }
+        if done {
+            self.duplicates = None;
+            self.duplicates_rx = None;
+        }
     }
 
     /// Hands over whatever the comparison has found since the last frame.
@@ -444,6 +490,7 @@ impl<'rt> Executor<'rt> {
         self.poll_watches(app);
         self.feed_search(app);
         self.feed_compare(app);
+        self.feed_duplicates(app);
         for (&id, handle) in &self.jobs {
             app.on_msg(Msg::JobProgress {
                 id,
@@ -462,6 +509,7 @@ impl<'rt> Executor<'rt> {
     fn shutdown(&mut self) {
         self.stop_search();
         self.stop_compare();
+        self.stop_duplicates();
         for handle in self.jobs.values() {
             handle.cancel();
         }

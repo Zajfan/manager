@@ -10,6 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use manager_core::compare::{
     CompareReport, CompareSpec, DiffEntry, SyncDirection, plan_sync, sync_jobs,
 };
+use manager_core::duplicates::{DuplicateGroup, DuplicateReport, DuplicateSpec};
 use manager_core::jobs::{
     ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent, JobId,
     JobReport, JobSpec, Outcome, Progress,
@@ -21,6 +22,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::compare::{self, Compare};
+use crate::duplicates::{self, Duplicates};
 use crate::format;
 use crate::results::{self, Results};
 use crate::viewer::{self, Action, Viewer};
@@ -47,6 +49,10 @@ pub enum Request {
     StartCompare(Box<CompareSpec>),
     /// Stop the comparison that's running, if any.
     CancelCompare,
+    /// Start looking for duplicate files.
+    StartDuplicates(Box<DuplicateSpec>),
+    /// Stop the duplicate search that's running, if any.
+    CancelDuplicates,
     /// Connect to an SFTP server.
     Connect {
         authority: String,
@@ -108,6 +114,12 @@ pub enum Msg {
         scanned: u64,
     },
     CompareFinished(CompareReport),
+    /// The duplicate search found a group.
+    DuplicateFound(Box<DuplicateGroup>),
+    DuplicateProgress {
+        scanned: u64,
+    },
+    DuplicateFinished(DuplicateReport),
     /// A connection attempt finished, one way or the other.
     Connected {
         authority: String,
@@ -163,6 +175,11 @@ pub enum Dialog {
         is_move: bool,
         sources: Vec<VPath>,
         input: String,
+    },
+    /// Ctrl+D: what to look for while finding duplicates.
+    FindDuplicates {
+        mask: String,
+        include_hidden: bool,
     },
     /// Ctrl+N: an SFTP server to connect to.
     Connect {
@@ -373,6 +390,8 @@ pub struct App {
     pub results: Option<Results>,
     /// What a folder comparison found. Like results, takes every key while open.
     pub compare: Option<Compare>,
+    /// What the duplicate finder found. Like compare, takes every key while open.
+    pub duplicates: Option<Duplicates>,
     /// The two folders the running comparison was started from, so syncing
     /// afterwards knows where each side's destination folder is.
     compare_roots: Option<(VPath, VPath)>,
@@ -402,6 +421,7 @@ impl App {
             results: None,
             compare: None,
             compare_roots: None,
+            duplicates: None,
             watching: [None, None],
             quit_armed: false,
             requests: Vec::new(),
@@ -535,6 +555,21 @@ impl App {
                     compare.finished(report);
                 }
             }
+            Msg::DuplicateFound(group) => {
+                if let Some(duplicates) = self.duplicates.as_mut() {
+                    duplicates.found(*group);
+                }
+            }
+            Msg::DuplicateProgress { scanned } => {
+                if let Some(duplicates) = self.duplicates.as_mut() {
+                    duplicates.progress(scanned);
+                }
+            }
+            Msg::DuplicateFinished(report) => {
+                if let Some(duplicates) = self.duplicates.as_mut() {
+                    duplicates.finished(report);
+                }
+            }
             Msg::Connected { authority, result } => match result {
                 Ok(landing) => {
                     self.status = Some(Status::Info(format!("Connected to {authority}")));
@@ -608,6 +643,12 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // The duplicate finder's results cover the screen too, for the same
+        // reason as compare and search.
+        if self.duplicates.is_some() {
+            self.handle_duplicates_key(key);
+            return;
+        }
         // The compare view covers the screen too, and takes priority for the
         // same reason: you're looking at something other than the panels.
         if self.compare.is_some() {
@@ -678,6 +719,7 @@ impl App {
             KeyCode::F(6) => self.open_transfer(true),
             KeyCode::F(9) if ctrl => self.open_compare(),
             KeyCode::Char('n') if ctrl => self.open_connect(),
+            KeyCode::Char('d') if ctrl => self.open_find_duplicates(),
             KeyCode::F(7) if alt => self.open_find(),
             KeyCode::F(7) => {
                 self.dialog = Some(Dialog::MkDir {
@@ -910,6 +952,33 @@ impl App {
             return;
         }
 
+        // The duplicate-finder dialog: one text field, one switch.
+        if let Dialog::FindDuplicates {
+            mask,
+            include_hidden,
+        } = dialog
+        {
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match key.code {
+                KeyCode::Char('h' | 'H') if alt => *include_hidden = !*include_hidden,
+                KeyCode::Backspace => {
+                    mask.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => mask.push(c),
+                KeyCode::Enter => {
+                    if let Some(Dialog::FindDuplicates {
+                        mask,
+                        include_hidden,
+                    }) = self.dialog.take()
+                    {
+                        self.start_duplicates(&mask, include_hidden);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // The compare dialog is just two switches.
         if let Dialog::CompareDirs {
             by_content,
@@ -1073,6 +1142,62 @@ impl App {
             username,
             auth: Auth::Password(password),
         });
+    }
+
+    /// Ctrl+D: ask what to look for while finding duplicates.
+    fn open_find_duplicates(&mut self) {
+        self.dialog = Some(Dialog::FindDuplicates {
+            mask: "*".into(),
+            include_hidden: self.show_hidden,
+        });
+    }
+
+    fn start_duplicates(&mut self, mask: &str, include_hidden: bool) {
+        let root = self.active_panel().path.clone();
+        self.duplicates = Some(Duplicates::new(format!("{mask} in {root}")));
+        self.requests
+            .push(Request::StartDuplicates(Box::new(DuplicateSpec {
+                root,
+                masks: Masks::parse(mask),
+                include_hidden,
+                ..Default::default()
+            })));
+    }
+
+    fn handle_duplicates_key(&mut self, key: KeyEvent) {
+        let Some(duplicates) = self.duplicates.as_mut() else {
+            return;
+        };
+        match duplicates.handle_key(key) {
+            duplicates::Action::Stay => {}
+            duplicates::Action::Close => self.close_duplicates(),
+            duplicates::Action::Delete => {
+                let targets: Vec<VPath> = duplicates
+                    .selection()
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
+                self.close_duplicates();
+                if !targets.is_empty() {
+                    // Trash, not permanent: the same default F8 uses, and
+                    // the existing confirmation dialog asks before anything
+                    // actually happens.
+                    self.dialog = Some(Dialog::Delete {
+                        targets,
+                        permanent: false,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Closes the duplicate finder, stopping the search if it was still going.
+    fn close_duplicates(&mut self) {
+        let still_running = self.duplicates.as_ref().is_some_and(|d| d.running);
+        self.duplicates = None;
+        if still_running {
+            self.requests.push(Request::CancelDuplicates);
+        }
     }
 
     /// Ctrl+F9: start comparing the left panel against the right one.
@@ -1656,6 +1781,141 @@ pub(crate) mod tests {
                 .iter()
                 .all(|r| !matches!(r, Request::Load { .. }))
         );
+    }
+
+    fn duplicate_requests(app: &mut App) -> Vec<DuplicateSpec> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::StartDuplicates(spec) => Some(*spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_d_opens_the_find_duplicates_dialog() {
+        let mut app = loaded_app();
+
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        assert!(matches!(app.dialog, Some(Dialog::FindDuplicates { .. })));
+    }
+
+    #[test]
+    fn enter_starts_looking_from_the_active_panel() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        app.handle_key(key(KeyCode::Enter));
+
+        assert!(app.dialog.is_none());
+        assert!(app.duplicates.is_some());
+        let started = duplicate_requests(&mut app);
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].root, vp("/home"));
+    }
+
+    #[test]
+    fn esc_closes_the_find_duplicates_dialog_without_starting() {
+        let mut app = loaded_app();
+        app.handle_key(ctrl(KeyCode::Char('d')));
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.dialog.is_none());
+        assert!(duplicate_requests(&mut app).is_empty());
+    }
+
+    fn started_duplicates(app: &mut App) {
+        app.handle_key(ctrl(KeyCode::Char('d')));
+        app.handle_key(key(KeyCode::Enter));
+        app.take_requests();
+    }
+
+    fn dup_group(names: &[&str]) -> DuplicateGroup {
+        DuplicateGroup {
+            size: 10,
+            hash: blake3::hash(b"whatever, not asserted on here"),
+            files: names
+                .iter()
+                .map(|n| entry(&vp("/home"), n, EntryKind::File, 10))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn groups_turn_up_in_the_view_as_they_are_found() {
+        let mut app = loaded_app();
+        started_duplicates(&mut app);
+
+        app.on_msg(Msg::DuplicateFound(Box::new(dup_group(&[
+            "a.txt", "b.txt",
+        ]))));
+        app.on_msg(Msg::DuplicateFinished(
+            manager_core::duplicates::DuplicateReport {
+                groups: 1,
+                extra_files: 1,
+                scanned: 9,
+                unreadable: 0,
+                cancelled: false,
+            },
+        ));
+
+        let duplicates = app.duplicates.as_ref().unwrap();
+        assert!(!duplicates.running);
+    }
+
+    #[test]
+    fn closing_the_view_stops_a_search_still_running() {
+        let mut app = loaded_app();
+        started_duplicates(&mut app);
+
+        app.handle_key(key(KeyCode::Esc));
+
+        assert!(app.duplicates.is_none());
+        assert!(app.take_requests().contains(&Request::CancelDuplicates));
+    }
+
+    #[test]
+    fn the_duplicates_view_takes_the_keys_while_open() {
+        let mut app = loaded_app();
+        started_duplicates(&mut app);
+
+        app.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(app.active, 0, "Tab didn't reach the panels");
+    }
+
+    #[test]
+    fn d_on_a_marked_file_closes_the_view_and_opens_the_delete_confirmation() {
+        let mut app = loaded_app();
+        started_duplicates(&mut app);
+        app.on_msg(Msg::DuplicateFound(Box::new(dup_group(&[
+            "a.txt", "b.txt",
+        ]))));
+
+        app.handle_key(key(KeyCode::Down)); // onto a.txt (row 0 is the heading)
+        app.handle_key(key(KeyCode::Char('d')));
+
+        assert!(app.duplicates.is_none(), "the view closes");
+        let Some(Dialog::Delete { targets, permanent }) = &app.dialog else {
+            panic!("expected the delete confirmation, got {:?}", app.dialog);
+        };
+        assert_eq!(targets, &[vp("/home").join("a.txt").unwrap()]);
+        assert!(!permanent, "duplicates go to the trash, like F8");
+    }
+
+    #[test]
+    fn d_with_nothing_findable_to_delete_just_closes() {
+        let mut app = loaded_app();
+        started_duplicates(&mut app);
+        // No groups ever arrived, so the cursor sits on nothing markable.
+
+        app.handle_key(key(KeyCode::Char('d')));
+
+        assert!(app.duplicates.is_none());
+        assert!(app.dialog.is_none());
     }
 
     #[test]
