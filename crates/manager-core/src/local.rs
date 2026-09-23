@@ -66,6 +66,25 @@ impl Vfs for LocalFs {
         Ok(Box::new(file))
     }
 
+    /// Seeks straight to the window instead of reading up to it.
+    async fn read_window(&self, path: &VPath, offset: u64, len: usize) -> Result<Vec<u8>> {
+        use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+
+        let mut file = tokio::fs::File::open(native(path)?)
+            .await
+            .map_err(|e| Error::from_io(path, e))?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| Error::from_io(path, e))?;
+
+        let mut window = Vec::new();
+        file.take(len as u64)
+            .read_to_end(&mut window)
+            .await
+            .map_err(|e| Error::from_io(path, e))?;
+        Ok(window)
+    }
+
     async fn open_write(&self, path: &VPath) -> Result<WriteStream> {
         let file = tokio::fs::File::create(native(path)?)
             .await

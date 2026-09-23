@@ -320,3 +320,43 @@ async fn local_fs_refuses_paths_it_cannot_open() {
         assert!(matches!(err, Error::Unsupported { .. }), "got {err:?}");
     }
 }
+
+#[tokio::test]
+async fn reads_a_window_from_the_middle_of_a_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("letters.txt"), b"abcdefghij").unwrap();
+
+    let window = LocalFs
+        .read_window(&vp(tmp.path().join("letters.txt")), 3, 4)
+        .await
+        .unwrap();
+
+    assert_eq!(window, b"defg");
+}
+
+#[tokio::test]
+async fn a_window_stops_at_the_end_of_the_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("letters.txt"), b"abcdefghij").unwrap();
+    let path = vp(tmp.path().join("letters.txt"));
+
+    assert_eq!(LocalFs.read_window(&path, 8, 100).await.unwrap(), b"ij");
+    assert!(
+        LocalFs.read_window(&path, 50, 10).await.unwrap().is_empty(),
+        "starting past the end is empty, not an error"
+    );
+}
+
+#[tokio::test]
+async fn a_window_can_reach_a_long_way_into_a_big_file() {
+    let tmp = TempDir::new().unwrap();
+    let big: Vec<u8> = (0..2_000_000).map(|i| (i % 251) as u8).collect();
+    fs::write(tmp.path().join("big.bin"), &big).unwrap();
+
+    let window = LocalFs
+        .read_window(&vp(tmp.path().join("big.bin")), 1_999_990, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(window, &big[1_999_990..]);
+}

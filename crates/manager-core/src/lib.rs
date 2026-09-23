@@ -21,6 +21,7 @@ mod local;
 mod router;
 mod sort;
 mod vfs;
+pub mod view;
 mod vpath;
 pub mod watch;
 

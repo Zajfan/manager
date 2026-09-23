@@ -52,6 +52,49 @@ pub trait Vfs: Send + Sync {
 
     async fn open_read(&self, path: &VPath) -> Result<ReadStream>;
 
+    /// Reads at most `len` bytes starting `offset` bytes into the file.
+    ///
+    /// This is what the viewer scrolls with: it needs a window somewhere in
+    /// the middle of a file without reading, or holding, all of it. A window
+    /// that starts past the end comes back empty rather than as an error.
+    async fn read_window(&self, path: &VPath, offset: u64, len: usize) -> Result<Vec<u8>> {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut stream = self.open_read(path).await?;
+        // Throw away everything before the window. Some backends genuinely
+        // can't do better — a ZIP entry has to be decompressed up to the point
+        // you want — so this is the behaviour every backend can manage, and
+        // the ones that can seek override it.
+        let mut scratch = vec![0u8; 64 * 1024];
+        let mut skipped = 0u64;
+        while skipped < offset {
+            let want = scratch.len().min((offset - skipped) as usize);
+            let read = stream
+                .read(&mut scratch[..want])
+                .await
+                .map_err(|e| Error::from_io(path, e))?;
+            if read == 0 {
+                return Ok(Vec::new()); // the window starts past the end
+            }
+            skipped += read as u64;
+        }
+
+        // Cap the first allocation: `len` is whatever the caller asked for.
+        let mut window = Vec::with_capacity(len.min(1024 * 1024));
+        while window.len() < len {
+            let want = scratch.len().min(len - window.len());
+            let read = stream
+                .read(&mut scratch[..want])
+                .await
+                .map_err(|e| Error::from_io(path, e))?;
+            if read == 0 {
+                break;
+            }
+            window.extend_from_slice(&scratch[..read]);
+        }
+        Ok(window)
+    }
+
     /// Creates the file, or empties it if it already exists.
     async fn open_write(&self, path: &VPath) -> Result<WriteStream>;
 

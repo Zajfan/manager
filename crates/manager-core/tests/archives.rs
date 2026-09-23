@@ -316,6 +316,23 @@ async fn a_whole_folder_can_be_copied_out_of_a_gzipped_tar() {
     );
 }
 
+#[tokio::test]
+async fn a_window_can_be_read_from_a_file_inside_an_archive() {
+    // The viewer scrolls with this, so it has to work in archives too, even
+    // though a ZIP entry can only be reached by decompressing up to it.
+    let tmp = TempDir::new().unwrap();
+    let body: Vec<u8> = (0..100_000).map(|i| (i % 251) as u8).collect();
+    let zip = make_zip(tmp.path(), "big.zip", &[("big.bin", &body)]);
+    let inside = zip.enter("zip").unwrap().join("big.bin").unwrap();
+
+    let window = Router::new()
+        .read_window(&inside, 99_990, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(window, &body[99_990..]);
+}
+
 // -------------------------------------------------------------------------------------------
 // Routing
 // -------------------------------------------------------------------------------------------

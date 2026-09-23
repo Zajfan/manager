@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::format;
+use crate::viewer::{self, Action, Viewer};
 
 /// Work for the background executor.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,11 @@ pub enum Request {
     CreateDir {
         panel: usize,
         path: VPath,
+    },
+    /// Read the start of `path` for the viewer.
+    ReadWindow {
+        path: VPath,
+        len: usize,
     },
     /// Watch `dir` for `panel`, replacing whatever that panel was watching.
     Watch {
@@ -64,6 +70,11 @@ pub enum Msg {
         panel: usize,
         path: VPath,
         result: Result<()>,
+    },
+    /// The bytes the viewer asked for, or why they couldn't be read.
+    Viewed {
+        path: VPath,
+        result: Result<Vec<u8>>,
     },
     /// Something changed in the folder this panel is showing.
     DirChanged {
@@ -271,6 +282,9 @@ pub struct App {
     pub focus: Focus,
     /// Oldest first; the first one is shown.
     pub questions: VecDeque<Question>,
+    /// The file being looked at with F3, if any. While it's open it takes
+    /// every key.
+    pub viewer: Option<Viewer>,
     /// The folder each panel currently has a file-system watch on, so we don't
     /// re-watch the same folder on every reload.
     watching: [Option<VPath>; 2],
@@ -293,6 +307,7 @@ impl App {
             job_cursor: 0,
             focus: Focus::Panels,
             questions: VecDeque::new(),
+            viewer: None,
             watching: [None, None],
             quit_armed: false,
             requests: Vec::new(),
@@ -385,6 +400,17 @@ impl App {
                 }
                 Err(err) => self.status = Some(Status::Error(err.to_string())),
             },
+            Msg::Viewed { path, result } => {
+                // The viewer may have been closed, or moved to another file,
+                // while this was being read.
+                let Some(viewer) = self.viewer.as_mut().filter(|v| v.path == path) else {
+                    return;
+                };
+                match result {
+                    Ok(bytes) => viewer.loaded(bytes),
+                    Err(err) => viewer.failed(err.to_string()),
+                }
+            }
             Msg::DirChanged { panel } => self.reload(panel),
             Msg::WatchFailed { panel, error } => {
                 // Not fatal: the panel just won't notice changes made by other
@@ -451,6 +477,13 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // The viewer covers the screen, so it gets every key until it closes.
+        if let Some(viewer) = self.viewer.as_mut() {
+            if viewer.handle_key(key) == Action::Close {
+                self.viewer = None;
+            }
+            return;
+        }
         if self.dialog.is_some() {
             self.handle_dialog_key(key);
             return;
@@ -507,9 +540,10 @@ impl App {
                 })
             }
             KeyCode::F(8) | KeyCode::Delete => self.open_delete(shift),
-            KeyCode::F(3 | 4) => {
+            KeyCode::F(3) => self.view_current(),
+            KeyCode::F(4) => {
                 self.status = Some(Status::Info(
-                    "View and edit arrive with previews (roadmap step 7)".into(),
+                    "Editing arrives later; F3 views a file".into(),
                 ))
             }
             _ => {}
@@ -753,6 +787,23 @@ impl App {
         }
     }
 
+    /// F3: look at the file under the cursor.
+    fn view_current(&mut self) {
+        let Some(Row::Entry(entry)) = self.active_panel().current() else {
+            return; // the ".." row, or an empty folder
+        };
+        if entry.kind.is_dir_like() {
+            self.status = Some(Status::Info(format!("{} is a folder", entry.name)));
+            return;
+        }
+        let (path, name, size) = (entry.path.clone(), entry.name.clone(), entry.size);
+        self.viewer = Some(Viewer::opening(path.clone(), name, size));
+        self.requests.push(Request::ReadWindow {
+            path,
+            len: viewer::LIMIT,
+        });
+    }
+
     fn go_up(&mut self) {
         let path = &self.panels[self.active].path;
         if let Some(parent) = path.parent() {
@@ -959,6 +1010,166 @@ pub(crate) mod tests {
         });
         app.take_requests();
         app
+    }
+
+    fn window_requests(app: &mut App) -> Vec<VPath> {
+        app.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::ReadWindow { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn f3_opens_the_viewer_and_asks_for_the_file() {
+        let mut app = app_showing(&[("notes.txt", EntryKind::File)]);
+        app.handle_key(key(KeyCode::Down));
+
+        app.handle_key(key(KeyCode::F(3)));
+
+        assert!(app.viewer.is_some());
+        assert_eq!(
+            window_requests(&mut app),
+            [vp("/home").join("notes.txt").unwrap()]
+        );
+    }
+
+    #[test]
+    fn f3_on_a_folder_says_so_instead() {
+        let mut app = app_showing(&[("docs", EntryKind::Dir)]);
+        app.handle_key(key(KeyCode::Down));
+
+        app.handle_key(key(KeyCode::F(3)));
+
+        assert!(app.viewer.is_none());
+        assert!(matches!(app.status, Some(Status::Info(_))));
+    }
+
+    #[test]
+    fn f3_on_the_parent_row_does_nothing_at_all() {
+        let mut app = app_showing(&[("notes.txt", EntryKind::File)]);
+
+        app.handle_key(key(KeyCode::F(3))); // cursor is still on ".."
+
+        assert!(app.viewer.is_none());
+        assert!(window_requests(&mut app).is_empty());
+    }
+
+    #[test]
+    fn f3_works_on_a_file_inside_an_archive() {
+        let inside = vp("/home")
+            .join("photos.zip")
+            .unwrap()
+            .enter("zip")
+            .unwrap();
+        let mut app = App::new(inside.clone(), vp("/tmp"));
+        serve_with(&mut app, |dir| {
+            vec![entry(dir, "readme.txt", EntryKind::File, 20)]
+        });
+        app.take_requests();
+        app.handle_key(key(KeyCode::Down));
+
+        app.handle_key(key(KeyCode::F(3)));
+
+        assert_eq!(
+            window_requests(&mut app),
+            [inside.join("readme.txt").unwrap()],
+            "the viewer reads through the same Vfs as everything else"
+        );
+    }
+
+    #[test]
+    fn the_viewer_takes_the_keys_while_it_is_open() {
+        let mut app = app_showing(&[
+            ("notes.txt", EntryKind::File),
+            ("other.txt", EntryKind::File),
+        ]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::F(3)));
+        app.take_requests();
+        let before = current_name(&app);
+
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(current_name(&app), before, "the panel didn't move");
+        assert_eq!(app.active, 0, "Tab didn't switch panels");
+    }
+
+    #[test]
+    fn closing_the_viewer_gives_the_keys_back() {
+        let mut app = app_showing(&[
+            ("notes.txt", EntryKind::File),
+            ("other.txt", EntryKind::File),
+        ]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::F(3)));
+        app.take_requests();
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.viewer.is_none());
+
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.active, 1);
+    }
+
+    #[test]
+    fn the_file_contents_reach_the_viewer() {
+        let mut app = app_showing(&[("notes.txt", EntryKind::File)]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::F(3)));
+        let path = window_requests(&mut app).remove(0);
+
+        app.on_msg(Msg::Viewed {
+            path,
+            result: Ok(b"hello\nthere".to_vec()),
+        });
+
+        let viewer = app.viewer.as_mut().unwrap();
+        viewer.fit(80, 10);
+        assert!(!viewer.loading);
+        assert_eq!(viewer.visible(), ["hello", "there"]);
+    }
+
+    #[test]
+    fn a_file_that_will_not_open_says_why_in_the_viewer() {
+        let mut app = app_showing(&[("secret", EntryKind::File)]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::F(3)));
+        let path = window_requests(&mut app).remove(0);
+
+        app.on_msg(Msg::Viewed {
+            path: path.clone(),
+            result: Err(Error::PermissionDenied(path)),
+        });
+
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(!viewer.loading);
+        assert!(
+            viewer
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("permission denied")
+        );
+    }
+
+    #[test]
+    fn contents_for_a_file_we_stopped_looking_at_are_dropped() {
+        let mut app = app_showing(&[("notes.txt", EntryKind::File)]);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::F(3)));
+        let path = window_requests(&mut app).remove(0);
+        app.handle_key(key(KeyCode::Esc));
+
+        app.on_msg(Msg::Viewed {
+            path,
+            result: Ok(b"too late".to_vec()),
+        });
+
+        assert!(app.viewer.is_none(), "a closed viewer stays closed");
     }
 
     #[test]

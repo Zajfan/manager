@@ -64,6 +64,10 @@ impl Vfs for Router {
         self.pick(path).open_read(path).await
     }
 
+    async fn read_window(&self, path: &VPath, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.pick(path).read_window(path, offset, len).await
+    }
+
     async fn open_write(&self, path: &VPath) -> Result<WriteStream> {
         self.pick(path).open_write(path).await
     }

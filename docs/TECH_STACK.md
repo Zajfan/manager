@@ -197,6 +197,9 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    archives nested inside archives are still to come.
 6. **GUI v0** – Tauri desktop shell reusing the same core.
 7. **Previews / quick view** – text, images, PDF, media.
+   - ✅ F3 in the terminal: text with encoding detection, hex, wrapping. Reads through
+     the `Vfs`, so it works inside archives with no extra code.
+   - Images, PDF and media wait for the GUI, where the webview renders them.
 8. **Remote** – SFTP, then cloud via OpenDAL.
 9. **Search & compare** – content search, folder compare/sync, duplicate finder.
 10. **Mobile** – Android (SAF plugin) then iOS.

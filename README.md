@@ -24,6 +24,7 @@ cargo test --workspace            # run all tests
 | Enter / Backspace | Open folder or archive / go up |
 | Tab | Switch panel |
 | Insert or Space | Mark |
+| F3 | View the file under the cursor (works inside archives too) |
 | Ctrl+F3 / F4 / F5 / F6 | Sort by name / extension / date / size (press again to reverse) |
 | Alt+H or Alt+. | Show / hide hidden files |
 | Ctrl+R | Reload (panels also refresh themselves when the folder changes) |
@@ -51,9 +52,29 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-core/src/watch.rs` | Watching a folder for changes, and coalescing bursts of them into a few refreshes |
 | `crates/manager-core/src/archive/` | Reading ZIP and TAR archives as folders: the tree index, the format readers, and the `Vfs` over them |
 | `crates/manager-core/src/router.rs` | Picks the backend for a path — the disk, or the inside of an archive |
+| `crates/manager-core/src/view.rs` | Deciding what a file is, decoding it, and laying it out in lines |
+| `crates/manager-tui/src/viewer.rs` | F3: the state of the full-screen viewer and what its keys do |
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
 | `crates/manager-tui/src/main.rs` | Event loop; runs disk work in the background |
+
+## Viewing a file
+
+F3 opens a file full-screen without leaving the manager. It works anywhere the
+rest of the app does, archives included.
+
+| Keys | Action |
+|---|---|
+| ↑ ↓ PgUp PgDn Home End | Move |
+| F4 or X | Switch between text and a hex dump |
+| W | Turn line wrapping off, to see long lines whole |
+| Esc, F3, F10 or Q | Close |
+
+It works out what a file is: UTF-8, UTF-16 (from a byte-order mark), or Latin-1
+for older single-byte text, and anything containing a zero byte opens as hex.
+A file is read up to 8 MiB; a longer one is shown from the start and says so in
+the title bar. Scrolling through the whole of a very large file needs windowed
+reading, which is still to come.
 
 ## Archives
 

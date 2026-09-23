@@ -3,18 +3,25 @@
 use manager_core::jobs::{JobId, Phase};
 use manager_core::{Entry, EntryKind, SortKey, SortOrder, VPath};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row as TableRow, Table};
 
 use crate::app::{App, Dialog, Focus, JobView, Panel, Question, Row, Status};
 use crate::format;
+use crate::viewer::{Mode, Viewer};
 
 /// Below this width the date column is dropped (phones in Termux, split terminals).
 const NARROW: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // The viewer covers everything: you are looking at a file, not at folders.
+    if let Some(viewer) = app.viewer.as_mut() {
+        draw_viewer(frame, viewer);
+        return;
+    }
+
     // The jobs box only appears while something is running.
     let jobs_height = if app.jobs.is_empty() {
         0
@@ -63,6 +70,61 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .unwrap_or_default();
         draw_question(frame, question, title);
     }
+}
+
+/// F3's full-screen view of one file.
+fn draw_viewer(frame: &mut Frame, viewer: &mut Viewer) {
+    let [title, body, keys] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    viewer.fit(usize::from(body.width), usize::from(body.height).max(1));
+
+    let mode = match viewer.mode {
+        Mode::Text(encoding) => format!("{encoding:?}").to_lowercase(),
+        Mode::Hex => "hex".into(),
+    };
+    let mut left = format!(" {}  {}", viewer.name, format::size_with_unit(viewer.size));
+    if viewer.is_truncated() {
+        // Say it plainly rather than letting someone think they've seen it all.
+        left.push_str(&format!(
+            "  (showing the first {})",
+            format::size_with_unit(super::viewer::LIMIT as u64)
+        ));
+    }
+    let right = format!("{mode}  {}% ", viewer.progress());
+    // Two passes over the same line: the name from the left, the position from
+    // the right. The second only paints its own text, so the first survives.
+    let bar = Style::new().bg(Color::Blue).fg(Color::White);
+    frame.render_widget(Paragraph::new(left).style(bar), title);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), title);
+
+    let lines: Vec<Line> = if viewer.loading {
+        vec![Line::from("Reading...".dim())]
+    } else if let Some(problem) = &viewer.error {
+        vec![Line::from(problem.clone().red())]
+    } else if viewer.line_count() == 0 {
+        vec![Line::from("(empty file)".dim())]
+    } else {
+        viewer
+            .visible()
+            .iter()
+            .map(|line| Line::from(line.clone()))
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+
+    let hints = match viewer.mode {
+        Mode::Text(_) => "F4Hex   WWrap   ↑↓ PgUp PgDn Home End   EscClose",
+        Mode::Hex => "F4Text   ↑↓ PgUp PgDn Home End   EscClose",
+    };
+    frame.render_widget(
+        Paragraph::new(hints).style(Style::new().bg(Color::Blue).fg(Color::White)),
+        keys,
+    );
 }
 
 fn draw_panel(frame: &mut Frame, area: Rect, panel: &mut Panel, is_active: bool) {
@@ -542,6 +604,43 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT));
         let screen = render(&mut app, 100, 20);
         assert!(screen.contains("Delete b.txt forever?"), "{screen}");
+    }
+
+    #[test]
+    fn the_viewer_covers_the_screen_with_the_file() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // onto "docs"
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // onto "a.txt"
+        app.handle_key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        app.on_msg(crate::app::Msg::Viewed {
+            path: app.viewer.as_ref().unwrap().path.clone(),
+            result: Ok(b"first line\nsecond line".to_vec()),
+        });
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("a.txt"), "{screen}");
+        assert!(screen.contains("first line"), "{screen}");
+        assert!(screen.contains("second line"), "{screen}");
+        assert!(screen.contains("EscClose"), "{screen}");
+        assert!(!screen.contains("b.txt"), "the panels are hidden: {screen}");
+    }
+
+    #[test]
+    fn a_file_that_would_not_open_shows_why_on_the_viewer() {
+        let mut app = loaded_app();
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        let path = app.viewer.as_ref().unwrap().path.clone();
+        app.on_msg(crate::app::Msg::Viewed {
+            path: path.clone(),
+            result: Err(manager_core::Error::PermissionDenied(path)),
+        });
+
+        let screen = render(&mut app, 80, 20);
+
+        assert!(screen.contains("permission denied"), "{screen}");
     }
 
     #[test]

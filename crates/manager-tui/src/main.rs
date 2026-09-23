@@ -6,6 +6,7 @@
 mod app;
 mod format;
 mod ui;
+mod viewer;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -210,6 +211,10 @@ impl<'rt> Executor<'rt> {
             Request::CreateDir { panel, path } => self.spawn(async move |vfs| Msg::DirCreated {
                 panel,
                 result: vfs.create_dir(&path).await,
+                path,
+            }),
+            Request::ReadWindow { path, len } => self.spawn(async move |vfs| Msg::Viewed {
+                result: vfs.read_window(&path, 0, len).await,
                 path,
             }),
             Request::Watch { panel, dir } => self.watch(panel, dir),
