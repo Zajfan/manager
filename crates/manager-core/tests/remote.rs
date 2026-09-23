@@ -19,12 +19,26 @@ use tokio::time::timeout;
 const AUTHORITY: &str = "tester@test-server:22";
 
 /// A `Router` already connected to a server backed by `root`.
+///
+/// Host keys go to a `known_hosts` file under a throwaway temp directory,
+/// never the real `~/.ssh/known_hosts` — a made-up test host has no business
+/// leaving a permanent entry in a real person's SSH configuration. The temp
+/// directory only needs to outlive the one handshake that reads and writes
+/// it, so it's dropped (and cleaned up) right here rather than held for the
+/// caller's whole test.
 async fn connected(root: &Path) -> Router {
     let stream = sftp_server::serve(root.to_path_buf()).await;
+    let known_hosts = TempDir::new().unwrap();
     let router = Router::new();
     timeout(
         Duration::from_secs(10),
-        router.connect_stream(AUTHORITY, stream, USER, &Auth::Password(PASSWORD.into())),
+        router.connect_stream(
+            AUTHORITY,
+            stream,
+            USER,
+            &Auth::Password(PASSWORD.into()),
+            &known_hosts.path().join("known_hosts"),
+        ),
     )
     .await
     .expect("connecting hung")
@@ -38,22 +52,29 @@ fn remote(path: &str) -> VPath {
 
 #[tokio::test]
 async fn it_connects_over_a_real_tcp_socket_not_just_the_test_pipe() {
-    // Every other test in this file uses `connect_stream` (an in-memory
-    // pipe), so `Router::connect`'s own `TcpStream::connect` — the path a
-    // real server is actually reached through — has no coverage without
-    // this one.
+    // Every other test in this file hands `connect_stream` an in-memory
+    // pipe. This one hands it a genuine `TcpStream` instead — the same type
+    // `Router::connect`'s own three-line `TcpStream::connect` produces for a
+    // real server — so the handshake, auth and SFTP layers above the
+    // transport all get proven against a real socket at least once, without
+    // going through `connect` itself and its real `~/.ssh/known_hosts` (see
+    // `connected`, above, for why every test avoids that).
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("over-the-wire.txt"), b"hello, socket").unwrap();
     let port = sftp_server::serve_tcp(tmp.path().to_path_buf()).await;
+    let socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
 
     let router = Router::new();
+    let known_hosts = TempDir::new().unwrap();
     router
-        .connect(
+        .connect_stream(
             AUTHORITY,
-            "127.0.0.1",
-            port,
+            socket,
             USER,
             &Auth::Password(PASSWORD.into()),
+            &known_hosts.path().join("known_hosts"),
         )
         .await
         .unwrap();
@@ -63,13 +84,48 @@ async fn it_connects_over_a_real_tcp_socket_not_just_the_test_pipe() {
 }
 
 #[tokio::test]
+async fn a_new_host_key_is_learned_in_the_given_known_hosts_file_and_nowhere_else() {
+    // Proves `connect_stream`'s `known_hosts` argument is actually where
+    // trust is recorded — not silently falling back to the real
+    // `~/.ssh/known_hosts`, which nothing here should ever touch.
+    let tmp = TempDir::new().unwrap();
+    let stream = sftp_server::serve(tmp.path().to_path_buf()).await;
+    let known_hosts_dir = TempDir::new().unwrap();
+    let known_hosts = known_hosts_dir.path().join("known_hosts");
+    assert!(!known_hosts.exists(), "nothing here yet, before connecting");
+
+    let router = Router::new();
+    router
+        .connect_stream(
+            AUTHORITY,
+            stream,
+            USER,
+            &Auth::Password(PASSWORD.into()),
+            &known_hosts,
+        )
+        .await
+        .unwrap();
+
+    let learned = std::fs::read_to_string(&known_hosts)
+        .expect("the host key should have been written to the given file");
+    assert!(learned.contains("test-server"), "{learned}");
+}
+
+#[tokio::test]
 async fn connecting_returns_a_landing_path_for_the_panel() {
     let tmp = TempDir::new().unwrap();
     let stream = sftp_server::serve(tmp.path().to_path_buf()).await;
     let router = Router::new();
 
+    let known_hosts = TempDir::new().unwrap();
     let landing = router
-        .connect_stream(AUTHORITY, stream, USER, &Auth::Password(PASSWORD.into()))
+        .connect_stream(
+            AUTHORITY,
+            stream,
+            USER,
+            &Auth::Password(PASSWORD.into()),
+            &known_hosts.path().join("known_hosts"),
+        )
         .await
         .unwrap();
 
@@ -82,8 +138,15 @@ async fn a_wrong_password_is_refused() {
     let stream = sftp_server::serve(tmp.path().to_path_buf()).await;
     let router = Router::new();
 
+    let known_hosts = TempDir::new().unwrap();
     let err = router
-        .connect_stream(AUTHORITY, stream, USER, &Auth::Password("nope".into()))
+        .connect_stream(
+            AUTHORITY,
+            stream,
+            USER,
+            &Auth::Password("nope".into()),
+            &known_hosts.path().join("known_hosts"),
+        )
         .await
         .unwrap_err();
 
@@ -189,8 +252,15 @@ async fn renaming_to_a_different_server_is_reported_as_crossing_devices() {
     let other_tmp = TempDir::new().unwrap();
     let other_stream = sftp_server::serve(other_tmp.path().to_path_buf()).await;
     const OTHER: &str = "tester@other-server:22";
+    let other_known_hosts = TempDir::new().unwrap();
     router
-        .connect_stream(OTHER, other_stream, USER, &Auth::Password(PASSWORD.into()))
+        .connect_stream(
+            OTHER,
+            other_stream,
+            USER,
+            &Auth::Password(PASSWORD.into()),
+            &other_known_hosts.path().join("known_hosts"),
+        )
         .await
         .unwrap();
     let elsewhere = VPath::remote("sftp", OTHER, "/a.txt").unwrap();

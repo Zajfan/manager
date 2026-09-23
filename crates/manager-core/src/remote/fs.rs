@@ -64,19 +64,25 @@ impl RemoteFs {
     /// `host:port` — what `tests/remote.rs` uses to connect to an in-process
     /// server over a pipe, with everything past the transport identical to a
     /// real connection.
+    ///
+    /// `known_hosts` is where host keys are checked and remembered — always
+    /// a path under the caller's own temp directory in a test, never the
+    /// real `~/.ssh/known_hosts`, so that connecting to a made-up test host
+    /// never writes a permanent entry into a real person's SSH configuration.
     pub async fn connect_stream<S>(
         &self,
         authority: &str,
         stream: S,
-        host: &str,
-        port: u16,
+        (host, port): (&str, u16),
         username: &str,
         auth: &Auth,
+        known_hosts: &std::path::Path,
     ) -> Result<VPath>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let connection = client::handshake(stream, host, port, username, auth).await?;
+        let connection =
+            client::handshake(stream, host, port, username, auth, Some(known_hosts)).await?;
         self.remember(authority, connection).await
     }
 

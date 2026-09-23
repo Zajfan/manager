@@ -6,6 +6,7 @@
 //! exercise the whole client without opening a socket or touching the
 //! filesystem outside a temp directory.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh::client::{Config, Handle, connect_stream};
@@ -43,18 +44,26 @@ pub(crate) async fn connect_tcp(
     let stream = TcpStream::connect((host, port))
         .await
         .map_err(|e| remote_error(&label, format!("couldn't reach the server: {e}")))?;
-    handshake(stream, host, port, username, auth).await
+    handshake(stream, host, port, username, auth, None).await
 }
 
 /// Does the handshake, authentication and SFTP subsystem request over
 /// whatever stream it's handed. The seam that makes this all testable
 /// without a socket.
+///
+/// `known_hosts` overrides where host keys are checked and remembered.
+/// `None` means the real `~/.ssh/known_hosts` — what every real connection
+/// uses. Tests always pass `Some` of a path under their own temp directory:
+/// without that, connecting to a made-up test host would write a real,
+/// permanent entry into the developer's own SSH configuration every time the
+/// suite runs, which is not a side effect a test suite gets to have.
 pub(crate) async fn handshake<S>(
     stream: S,
     host: &str,
     port: u16,
     username: &str,
     auth: &Auth,
+    known_hosts: Option<&Path>,
 ) -> Result<Connection>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -64,6 +73,7 @@ where
     let handler = ClientHandler {
         host: host.to_string(),
         port,
+        known_hosts: known_hosts.map(Path::to_path_buf),
     };
 
     let mut handle = connect_stream(config, stream, handler)
@@ -127,6 +137,7 @@ fn remote_error(authority: &str, message: String) -> Error {
 pub(crate) struct ClientHandler {
     host: String,
     port: u16,
+    known_hosts: Option<PathBuf>,
 }
 
 impl russh::client::Handler for ClientHandler {
@@ -139,7 +150,13 @@ impl russh::client::Handler for ClientHandler {
         let PublicKeyOrCertificate::PublicKey { key, .. } = server_public_key else {
             return Ok(false);
         };
-        match keys::known_hosts::check_known_hosts(&self.host, self.port, key) {
+        let checked = match &self.known_hosts {
+            Some(path) => {
+                keys::known_hosts::check_known_hosts_path(&self.host, self.port, key, path)
+            }
+            None => keys::known_hosts::check_known_hosts(&self.host, self.port, key),
+        };
+        match checked {
             Ok(true) => Ok(true),
             Ok(false) => {
                 // Never seen this host before: trust it, the way `ssh` asks
@@ -147,7 +164,12 @@ impl russh::client::Handler for ClientHandler {
                 // remembers the answer. There's nowhere here to ask first —
                 // that's the honest cost of not yet having interactive
                 // per-call prompts (see the module docs on `RemoteFs`).
-                let _ = keys::known_hosts::learn_known_hosts(&self.host, self.port, key);
+                let _ = match &self.known_hosts {
+                    Some(path) => {
+                        keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, path)
+                    }
+                    None => keys::known_hosts::learn_known_hosts(&self.host, self.port, key),
+                };
                 Ok(true)
             }
             // `KeyChanged` and anything else: refuse. A key that doesn't

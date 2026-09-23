@@ -56,7 +56,8 @@ impl Router {
             .await
     }
 
-    /// The same, but over a stream that's already open. See
+    /// The same, but over a stream that's already open, checking host keys
+    /// against `known_hosts` instead of the real `~/.ssh/known_hosts`. See
     /// [`RemoteFs::connect_stream`] — used only by tests.
     pub async fn connect_stream<S>(
         &self,
@@ -64,12 +65,20 @@ impl Router {
         stream: S,
         username: &str,
         auth: &Auth,
+        known_hosts: &std::path::Path,
     ) -> Result<VPath>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         self.remote
-            .connect_stream(authority, stream, "test-server", 22, username, auth)
+            .connect_stream(
+                authority,
+                stream,
+                ("test-server", 22),
+                username,
+                auth,
+                known_hosts,
+            )
             .await
     }
 
