@@ -58,6 +58,13 @@ export interface PanelProps {
   /** The other panel's current path, pre-filled as F5/F6's destination —
    * same convention as `manager-tui`'s transfer dialog. */
   otherPath?: () => string;
+  /** Alt+F7: asks the parent to open the search overlay rooted here. */
+  onOpenSearch?: (rootPath: string) => void;
+  /** A search hit to jump to: opens its folder and puts the cursor on it.
+   * Set by the parent once (e.g. from Search's onGoto); call
+   * `onGotoHandled` once it's been acted on so the parent can clear it. */
+  gotoTarget?: () => string | null;
+  onGotoHandled?: () => void;
 }
 
 async function fetchListing(path: string): Promise<ListingDto> {
@@ -77,9 +84,37 @@ export function Panel(props: PanelProps) {
   const [pendingTransfer, setPendingTransfer] = createSignal<PendingTransfer | null>(null);
   const [destInput, setDestInput] = createSignal("");
   const [activeJob, setActiveJob] = createSignal<ActiveJob | null>(null);
+  const [pendingCursorTarget, setPendingCursorTarget] = createSignal<string | null>(null);
   const [listing, { refetch }] = createResource(path, fetchListing);
 
   createEffect(() => props.onPathChange?.(path()));
+
+  // A search hit to jump to: open its folder, then (once that folder's
+  // listing arrives, below) put the cursor on the file itself.
+  createEffect(() => {
+    const target = props.gotoTarget?.();
+    if (!target) return;
+    void (async () => {
+      const parent = await invoke<string | null>("parent_of", { path: target });
+      if (parent) {
+        setPendingCursorTarget(target);
+        setPath(parent);
+        setCursor(0);
+        setMarked(new Set<string>());
+      }
+      props.onGotoHandled?.();
+    })();
+  });
+
+  createEffect(() => {
+    const target = pendingCursorTarget();
+    if (!target) return;
+    const index = entries().findIndex((e) => e.path === target);
+    if (index >= 0) {
+      setCursor(index);
+      setPendingCursorTarget(null);
+    }
+  });
 
   let destInputEl: HTMLInputElement | undefined;
   createEffect(() => {
@@ -236,6 +271,12 @@ export function Panel(props: PanelProps) {
       }
       // Any other key (typing, arrows, Backspace within the field) is left
       // alone so the native <input> handles it itself.
+      return;
+    }
+
+    if (event.altKey && event.key === "F7") {
+      props.onOpenSearch?.(path());
+      event.preventDefault();
       return;
     }
 

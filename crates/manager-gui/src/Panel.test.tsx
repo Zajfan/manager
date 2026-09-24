@@ -51,6 +51,12 @@ function fakeInvoke(byPath: Record<string, ListingDto>) {
     if (command === "job_action" || command === "answer_conflict" || command === "answer_error") {
       return undefined;
     }
+    if (command === "parent_of") {
+      // Matches this file's own listing() convention: a folder's key is
+      // everything up to and including the last "/" before an entry's name.
+      const path = args?.path as string;
+      return path.slice(0, path.lastIndexOf("/") + 1);
+    }
     throw new Error(`unexpected command: ${command}`);
   });
 }
@@ -567,6 +573,68 @@ describe("Panel", () => {
     fireEvent.keyDown(screen.getByText("docs").closest(".panel")!, { key: "Enter" });
 
     await waitFor(() => expect(onPathChange).toHaveBeenCalledWith("file:///home/docs"));
+  });
+
+  it("Alt+F7 asks the parent to open search rooted at this panel's path", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    const onOpenSearch = vi.fn();
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        onOpenSearch={onOpenSearch}
+      />
+    ));
+    await screen.findByText("a.txt");
+
+    fireEvent.keyDown(screen.getByText("a.txt").closest(".panel")!, { key: "F7", altKey: true });
+
+    expect(onOpenSearch).toHaveBeenCalledWith("file:///home/");
+  });
+
+  it("F7 without Alt does nothing — it isn't a bound key on its own", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    const onOpenSearch = vi.fn();
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        onOpenSearch={onOpenSearch}
+      />
+    ));
+    await screen.findByText("a.txt");
+
+    fireEvent.keyDown(screen.getByText("a.txt").closest(".panel")!, { key: "F7" });
+
+    expect(onOpenSearch).not.toHaveBeenCalled();
+  });
+
+  it("a gotoTarget opens its folder and lands the cursor on it, then reports it handled", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+      "file:///docs/": listing("file:///docs/", [["x.txt", false], ["found.txt", false]]),
+    });
+    const onGotoHandled = vi.fn();
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        gotoTarget={() => "file:///docs/found.txt"}
+        onGotoHandled={onGotoHandled}
+      />
+    ));
+
+    expect(await screen.findByText("found.txt")).toBeInTheDocument();
+    expect(screen.getByText("found.txt").closest("tr")!.className).toContain("selected");
+    expect(screen.getByText("x.txt").closest("tr")!.className).not.toContain("selected");
+    await waitFor(() => expect(onGotoHandled).toHaveBeenCalled());
   });
 
   it("shows an empty folder plainly rather than a blank table", async () => {

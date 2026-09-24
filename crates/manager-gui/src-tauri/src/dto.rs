@@ -10,6 +10,7 @@
 use std::time::SystemTime;
 
 use manager_core::jobs::{ConflictQuestion, ErrorQuestion, JobReport, Outcome, Phase, Progress};
+use manager_core::search::SearchReport;
 use manager_core::{Entry, EntryKind, VPath};
 use serde::Serialize;
 
@@ -173,6 +174,28 @@ impl From<&ErrorQuestion> for ErrorQuestionDto {
         ErrorQuestionDto {
             job: question.job,
             message: question.error.to_string(),
+        }
+    }
+}
+
+/// Sent once when a search ends, however it ends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchReportDto {
+    pub found: u64,
+    pub scanned: u64,
+    /// Folders that couldn't be read, usually for want of permission.
+    pub unreadable: u64,
+    pub cancelled: bool,
+}
+
+impl From<&SearchReport> for SearchReportDto {
+    fn from(report: &SearchReport) -> Self {
+        SearchReportDto {
+            found: report.found,
+            scanned: report.scanned,
+            unreadable: report.unreadable,
+            cancelled: report.cancelled,
         }
     }
 }
@@ -371,6 +394,21 @@ mod tests {
         let dto = ErrorQuestionDto::from(&question);
         assert_eq!(dto.job, 4);
         assert!(!dto.message.is_empty());
+    }
+
+    #[test]
+    fn a_search_report_carries_its_counts_and_whether_it_was_cancelled() {
+        let report = SearchReport {
+            found: 3,
+            scanned: 40,
+            unreadable: 1,
+            cancelled: true,
+        };
+        let dto = SearchReportDto::from(&report);
+        assert_eq!(dto.found, 3);
+        assert_eq!(dto.scanned, 40);
+        assert_eq!(dto.unreadable, 1);
+        assert!(dto.cancelled);
     }
 
     #[test]

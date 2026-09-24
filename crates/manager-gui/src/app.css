@@ -37,6 +37,7 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .panels {
@@ -189,4 +190,61 @@ body {
 .panel-table tbody tr.marked td,
 .panel-table tbody tr.marked td.name.dir {
   color: var(--marked);
+}
+
+/* Alt+F7's dialog and results — a floating panel over both of the app's
+   own panels, the closest a browser window gets to a terminal's full-screen
+   overlay. */
+.overlay {
+  position: absolute;
+  inset: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  overflow: hidden;
+  padding: 8px;
+}
+
+.overlay-title {
+  font-weight: bold;
+  padding-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overlay-hint {
+  color: var(--dim);
+  padding: 6px 0;
+  flex-shrink: 0;
+}
+
+.overlay-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.overlay-field.checkbox {
+  gap: 6px;
+}
+
+.overlay-field input[type="text"],
+.overlay-field:not(.checkbox) input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font: inherit;
+  padding: 2px 6px;
+}
+
+.overlay .panel-table {
+  flex: 1;
+  min-height: 0;
 }

@@ -5,6 +5,7 @@
 import { Show, createSignal, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Panel } from "./Panel";
+import { Search } from "./Search";
 import "./app.css";
 
 export default function App() {
@@ -15,6 +16,11 @@ export default function App() {
   // dialog starts pre-filled with the *other* panel's path.
   const [pathOf0, setPathOf0] = createSignal("");
   const [pathOf1, setPathOf1] = createSignal("");
+  // Alt+F7: which panel opened it (its results go back to that panel) and
+  // what folder it searches. `null` means the overlay is closed.
+  const [search, setSearch] = createSignal<{ panel: 0 | 1; root: string } | null>(null);
+  const [gotoTarget0, setGotoTarget0] = createSignal<string | null>(null);
+  const [gotoTarget1, setGotoTarget1] = createSignal<string | null>(null);
 
   onMount(async () => {
     setHome(await invoke<string>("home_dir"));
@@ -25,6 +31,13 @@ export default function App() {
       setActive((a) => (a === 0 ? 1 : 0));
       event.preventDefault();
     }
+  }
+
+  function handleGoto(path: string) {
+    const s = search();
+    if (!s) return;
+    (s.panel === 0 ? setGotoTarget0 : setGotoTarget1)(path);
+    setSearch(null);
   }
 
   return (
@@ -38,6 +51,9 @@ export default function App() {
               onActivate={() => setActive(0)}
               onPathChange={setPathOf0}
               otherPath={pathOf1}
+              onOpenSearch={(root) => setSearch({ panel: 0, root })}
+              gotoTarget={gotoTarget0}
+              onGotoHandled={() => setGotoTarget0(null)}
             />
             <Panel
               initialPath={startPath()}
@@ -45,8 +61,16 @@ export default function App() {
               onActivate={() => setActive(1)}
               onPathChange={setPathOf1}
               otherPath={pathOf0}
+              onOpenSearch={(root) => setSearch({ panel: 1, root })}
+              gotoTarget={gotoTarget1}
+              onGotoHandled={() => setGotoTarget1(null)}
             />
           </div>
+        )}
+      </Show>
+      <Show when={search()}>
+        {(s) => (
+          <Search rootPath={s().root} onClose={() => setSearch(null)} onGoto={handleGoto} />
         )}
       </Show>
     </div>

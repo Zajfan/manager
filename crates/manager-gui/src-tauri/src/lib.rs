@@ -1,6 +1,7 @@
 mod commands;
 mod dto;
 mod jobs;
+mod search;
 
 use commands::AppState;
 use tauri::Manager;
@@ -16,11 +17,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_dir,
             commands::home_dir,
+            commands::parent_of,
             commands::start_delete,
             commands::start_transfer,
             commands::job_action,
             commands::answer_error,
             commands::answer_conflict,
+            commands::start_search,
+            commands::cancel_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

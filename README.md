@@ -210,11 +210,16 @@ readout, and asks the same questions the terminal version's dialogs do when some
 needs a decision: a destination that already exists (**O**verwrite, **U**pdate if older,
 **S**kip, **R**ename, **C**ancel) or a failed item (**R**etry, **S**kip, skip **A**ll,
 **C**ancel) — hold Shift on a conflict answer to use it for every later conflict in that
-job, too. Esc cancels a running job, or answers its current question the same as C. It
-reuses `manager-core` directly: sorting, folders-first ordering and the job engine itself
-are the same code the terminal version calls, not a second implementation.
+job, too. Esc cancels a running job, or answers its current question the same as C.
+Alt+F7 opens a floating overlay to find files under the active panel's folder — a Named
+mask and an optional Containing text, Alt+C for case, Alt+H for hidden files, exactly the
+terminal version's own switches — with hits arriving live while it's still searching;
+Enter on one takes the panel there and puts the cursor on it, Esc closes it (and stops
+the search if it's still running). It reuses `manager-core` directly: sorting,
+folders-first ordering, the job engine and the search walk are the same code the terminal
+version calls, not a second implementation.
 
-What it doesn't have yet, on purpose rather than by oversight: previews, search, compare,
+What it doesn't have yet, on purpose rather than by oversight: previews, compare,
 duplicates, or SFTP. All of that already works in the terminal version; bringing it to
 the GUI is real, separate work, not assumed to come along for free.
 

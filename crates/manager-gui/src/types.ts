@@ -77,3 +77,18 @@ export interface ErrorQuestionDto {
   job: number;
   message: string;
 }
+
+/** Sent once when a search ends, however it ends. */
+export interface SearchReportDto {
+  found: number;
+  scanned: number;
+  /** Folders that couldn't be read, usually for want of permission. */
+  unreadable: number;
+  cancelled: boolean;
+}
+
+/** The payload of a `search-progress` event. */
+export interface SearchProgressEvent {
+  scanned: number;
+  found: number;
+}

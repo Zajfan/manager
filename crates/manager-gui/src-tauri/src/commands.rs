@@ -10,16 +10,19 @@
 use std::sync::Arc;
 
 use manager_core::jobs::JobSpec;
+use manager_core::search::{Masks, Needle, SearchSpec};
 use manager_core::{sort_entries, Router, SortKey, SortOrder, SortSpec, VPath, Vfs};
 
 use crate::dto::{JobStartedDto, ListingDto};
 use crate::jobs::JobsState;
+use crate::search::SearchState;
 
 /// Held for the app's whole lifetime, the same way `manager-tui`'s event
 /// loop holds one `Router` and hands out clones of it to whatever needs one.
 pub struct AppState {
     pub router: Arc<Router>,
     pub jobs: JobsState,
+    pub search: SearchState,
 }
 
 impl AppState {
@@ -27,6 +30,7 @@ impl AppState {
         AppState {
             router: Arc::new(Router::new()),
             jobs: JobsState::new(app),
+            search: SearchState::new(),
         }
     }
 }
@@ -60,6 +64,15 @@ pub async fn list_dir(
     };
     sort_entries(&mut entries, spec);
     Ok(ListingDto::new(&vpath, &entries))
+}
+
+/// The folder a path is directly inside, or `None` at the top of a
+/// filesystem. Used when "going to" a search hit: the panel needs to open
+/// the file's folder, not the file itself.
+#[tauri::command]
+pub fn parent_of(path: String) -> Result<Option<String>, String> {
+    let vpath = VPath::parse(&path).map_err(|e| e.to_string())?;
+    Ok(vpath.parent().map(|p| p.to_uri()))
 }
 
 fn parse_sort_key(key: &str) -> SortKey {
@@ -170,6 +183,43 @@ pub fn answer_error(
     answer: String,
 ) -> Result<(), String> {
     state.jobs.answer_error(job, &answer)
+}
+
+/// Searches under `root` for files matching `mask` (`*.rs`, several at once
+/// with `;`, and what to leave out after `|` — same syntax the terminal
+/// version's Named field takes), optionally requiring `text` to appear
+/// inside each one. Starting a new search cancels whatever one was already
+/// running — only one runs at a time, matching the terminal version's
+/// single results view. Hits, a periodic scanned-count and the eventual
+/// report arrive as `search-found`, `search-progress` and `search-finished`
+/// events; this command itself returns as soon as the search has started.
+#[tauri::command]
+pub fn start_search(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    root: String,
+    mask: String,
+    text: String,
+    case_sensitive: bool,
+    include_hidden: bool,
+) -> Result<(), String> {
+    let root = VPath::parse(&root).map_err(|e| e.to_string())?;
+    let spec = SearchSpec {
+        root,
+        masks: Masks::parse(&mask),
+        needle: Needle::new(&text, case_sensitive),
+        include_hidden,
+    };
+    state
+        .search
+        .start(Arc::clone(&state.router) as Arc<dyn Vfs>, spec, app);
+    Ok(())
+}
+
+/// Stops the running search, if there is one.
+#[tauri::command]
+pub fn cancel_search(state: tauri::State<'_, AppState>) {
+    state.search.cancel();
 }
 
 /// Answers a job's "destination already exists" question. `action` is
