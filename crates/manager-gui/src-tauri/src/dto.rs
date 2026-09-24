@@ -10,6 +10,7 @@
 use std::time::SystemTime;
 
 use manager_core::compare::{DiffEntry, DiffStatus, Side};
+use manager_core::duplicates::{DuplicateGroup, DuplicateReport};
 use manager_core::jobs::{ConflictQuestion, ErrorQuestion, JobReport, Outcome, Phase, Progress};
 use manager_core::search::SearchReport;
 use manager_core::{Entry, EntryKind, VPath};
@@ -194,6 +195,49 @@ impl From<&SearchReport> for SearchReportDto {
     fn from(report: &SearchReport) -> Self {
         SearchReportDto {
             found: report.found,
+            scanned: report.scanned,
+            unreadable: report.unreadable,
+            cancelled: report.cancelled,
+        }
+    }
+}
+
+/// One group of files with identical content. The hash that proved it isn't
+/// included — it's an internal grouping key, never shown to a person.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroupDto {
+    /// How many bytes each copy wastes.
+    pub size: u64,
+    pub files: Vec<EntryDto>,
+}
+
+impl From<&DuplicateGroup> for DuplicateGroupDto {
+    fn from(group: &DuplicateGroup) -> Self {
+        DuplicateGroupDto {
+            size: group.size,
+            files: group.files.iter().map(EntryDto::from).collect(),
+        }
+    }
+}
+
+/// Sent once when a duplicate search ends, however it ends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateReportDto {
+    pub groups: u64,
+    /// Copies that could be removed, keeping one of each group.
+    pub extra_files: u64,
+    pub scanned: u64,
+    pub unreadable: u64,
+    pub cancelled: bool,
+}
+
+impl From<&DuplicateReport> for DuplicateReportDto {
+    fn from(report: &DuplicateReport) -> Self {
+        DuplicateReportDto {
+            groups: report.groups,
+            extra_files: report.extra_files,
             scanned: report.scanned,
             unreadable: report.unreadable,
             cancelled: report.cancelled,
@@ -456,6 +500,39 @@ mod tests {
         let dto = ErrorQuestionDto::from(&question);
         assert_eq!(dto.job, 4);
         assert!(!dto.message.is_empty());
+    }
+
+    #[test]
+    fn a_duplicate_group_carries_its_size_and_files() {
+        let group = DuplicateGroup {
+            size: 42,
+            hash: blake3::hash(b"x"),
+            files: vec![
+                entry("a.txt", EntryKind::File, 42),
+                entry("b.txt", EntryKind::File, 42),
+            ],
+        };
+        let dto = DuplicateGroupDto::from(&group);
+        assert_eq!(dto.size, 42);
+        assert_eq!(dto.files.len(), 2);
+        assert_eq!(dto.files[0].name, "a.txt");
+    }
+
+    #[test]
+    fn a_duplicate_report_carries_its_counts() {
+        let report = DuplicateReport {
+            groups: 2,
+            extra_files: 3,
+            scanned: 50,
+            unreadable: 1,
+            cancelled: false,
+        };
+        let dto = DuplicateReportDto::from(&report);
+        assert_eq!(dto.groups, 2);
+        assert_eq!(dto.extra_files, 3);
+        assert_eq!(dto.scanned, 50);
+        assert_eq!(dto.unreadable, 1);
+        assert!(!dto.cancelled);
     }
 
     #[test]

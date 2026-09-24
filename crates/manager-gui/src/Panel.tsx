@@ -60,6 +60,8 @@ export interface PanelProps {
   otherPath?: () => string;
   /** Alt+F7: asks the parent to open the search overlay rooted here. */
   onOpenSearch?: (rootPath: string) => void;
+  /** Ctrl+D: asks the parent to open the duplicate finder rooted here. */
+  onOpenDuplicates?: (rootPath: string) => void;
   /** A search hit to jump to: opens its folder and puts the cursor on it.
    * Set by the parent once (e.g. from Search's onGoto); call
    * `onGotoHandled` once it's been acted on so the parent can clear it. */
@@ -276,6 +278,12 @@ export function Panel(props: PanelProps) {
 
     if (event.altKey && event.key === "F7") {
       props.onOpenSearch?.(path());
+      event.preventDefault();
+      return;
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === "d") {
+      props.onOpenDuplicates?.(path());
       event.preventDefault();
       return;
     }

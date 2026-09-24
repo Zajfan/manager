@@ -220,14 +220,17 @@ all the way down — Alt+C to check content instead of trusting size and modifie
 Alt+H for hidden files — with Space to mark a difference that isn't already identical
 (A marks every one that is), and `>`, `<` or U to sync the marked differences (or the one
 under the cursor) left-to-right, right-to-left, or whichever side is newer, through the
-very same job engine and its conflict/error dialogs F5 already uses. It reuses
-`manager-core` directly: sorting, folders-first ordering, the job engine and the
-search/compare walks are the same code the terminal version calls, not a second
-implementation.
+very same job engine and its conflict/error dialogs F5 already uses. Ctrl+D looks for
+files with identical content under the active panel's folder the same way, grouped as
+they're found; Space marks a file, K keeps the first of each group and marks the rest,
+and D moves the marked files (or the one under the cursor) to the trash — through the
+same F8 uses, error dialog included. It reuses `manager-core` directly: sorting,
+folders-first ordering, the job engine and the search/compare/duplicate walks are the
+same code the terminal version calls, not a second implementation.
 
-What it doesn't have yet, on purpose rather than by oversight: previews, duplicates, or
-SFTP. All of that already works in the terminal version; bringing it to the GUI is real,
-separate work, not assumed to come along for free.
+What it doesn't have yet, on purpose rather than by oversight: previews or SFTP. Both
+already work in the terminal version; bringing them to the GUI is real, separate work,
+not assumed to come along for free.
 
 ```sh
 cd crates/manager-gui

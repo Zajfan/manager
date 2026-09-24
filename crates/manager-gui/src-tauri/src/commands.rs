@@ -10,12 +10,14 @@
 use std::sync::Arc;
 
 use manager_core::compare::{CompareSpec, SyncDirection};
+use manager_core::duplicates::DuplicateSpec;
 use manager_core::jobs::JobSpec;
 use manager_core::search::{Masks, Needle, SearchSpec};
 use manager_core::{sort_entries, Router, SortKey, SortOrder, SortSpec, VPath, Vfs};
 
 use crate::compare::CompareState;
 use crate::dto::{JobStartedDto, ListingDto};
+use crate::duplicates::DuplicatesState;
 use crate::jobs::JobsState;
 use crate::search::SearchState;
 
@@ -26,6 +28,7 @@ pub struct AppState {
     pub jobs: JobsState,
     pub search: SearchState,
     pub compare: CompareState,
+    pub duplicates: DuplicatesState,
 }
 
 impl AppState {
@@ -35,6 +38,7 @@ impl AppState {
             jobs: JobsState::new(app),
             search: SearchState::new(),
             compare: CompareState::new(),
+            duplicates: DuplicatesState::new(),
         }
     }
 }
@@ -300,4 +304,38 @@ pub fn sync_compare(
         Arc::clone(&state.router) as Arc<dyn Vfs>,
         app,
     )
+}
+
+/// Looks for files with identical content under `root`, all the way down.
+/// Starting a new search cancels whatever one was already running — only
+/// one runs at a time, matching the terminal version's single duplicate
+/// finder. Groups, a periodic scanned-count and the eventual report arrive
+/// as `duplicates-found`, `duplicates-progress` and `duplicates-finished`
+/// events. Deleting what it finds is just an ordinary `start_delete` call —
+/// nothing new needed for that.
+#[tauri::command]
+pub fn start_duplicates(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    root: String,
+    mask: String,
+    include_hidden: bool,
+) -> Result<(), String> {
+    let root = VPath::parse(&root).map_err(|e| e.to_string())?;
+    let spec = DuplicateSpec {
+        root,
+        masks: Masks::parse(&mask),
+        include_hidden,
+        ..Default::default()
+    };
+    state
+        .duplicates
+        .start(Arc::clone(&state.router) as Arc<dyn Vfs>, spec, app);
+    Ok(())
+}
+
+/// Stops the running duplicate search, if there is one.
+#[tauri::command]
+pub fn cancel_duplicates(state: tauri::State<'_, AppState>) {
+    state.duplicates.cancel();
 }

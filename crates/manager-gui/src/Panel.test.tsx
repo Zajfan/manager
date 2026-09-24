@@ -595,6 +595,26 @@ describe("Panel", () => {
     expect(onOpenSearch).toHaveBeenCalledWith("file:///home/");
   });
 
+  it("Ctrl+D asks the parent to open the duplicate finder rooted at this panel's path", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    const onOpenDuplicates = vi.fn();
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        onOpenDuplicates={onOpenDuplicates}
+      />
+    ));
+    await screen.findByText("a.txt");
+
+    fireEvent.keyDown(screen.getByText("a.txt").closest(".panel")!, { key: "d", ctrlKey: true });
+
+    expect(onOpenDuplicates).toHaveBeenCalledWith("file:///home/");
+  });
+
   it("F7 without Alt does nothing — it isn't a bound key on its own", async () => {
     setup({
       "file:///home/": listing("file:///home/", [["a.txt", false]]),

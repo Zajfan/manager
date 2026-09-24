@@ -1,6 +1,7 @@
 mod commands;
 mod compare;
 mod dto;
+mod duplicates;
 mod jobs;
 mod search;
 
@@ -29,6 +30,8 @@ pub fn run() {
             commands::start_compare,
             commands::cancel_compare,
             commands::sync_compare,
+            commands::start_duplicates,
+            commands::cancel_duplicates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

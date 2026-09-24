@@ -5,6 +5,7 @@
 import { Show, createSignal, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Compare } from "./Compare";
+import { Duplicates } from "./Duplicates";
 import { Panel } from "./Panel";
 import { Search } from "./Search";
 import "./app.css";
@@ -25,6 +26,8 @@ export default function App() {
   // Ctrl+F9: compares the left panel's folder against the right one's,
   // same as the terminal version — not tied to whichever panel is active.
   const [compareOpen, setCompareOpen] = createSignal(false);
+  // Ctrl+D: which panel opened the duplicate finder, and where it searches.
+  const [duplicates, setDuplicates] = createSignal<string | null>(null);
 
   onMount(async () => {
     setHome(await invoke<string>("home_dir"));
@@ -59,6 +62,7 @@ export default function App() {
               onPathChange={setPathOf0}
               otherPath={pathOf1}
               onOpenSearch={(root) => setSearch({ panel: 0, root })}
+              onOpenDuplicates={setDuplicates}
               gotoTarget={gotoTarget0}
               onGotoHandled={() => setGotoTarget0(null)}
             />
@@ -69,6 +73,7 @@ export default function App() {
               onPathChange={setPathOf1}
               otherPath={pathOf0}
               onOpenSearch={(root) => setSearch({ panel: 1, root })}
+              onOpenDuplicates={setDuplicates}
               gotoTarget={gotoTarget1}
               onGotoHandled={() => setGotoTarget1(null)}
             />
@@ -82,6 +87,9 @@ export default function App() {
       </Show>
       <Show when={compareOpen()}>
         <Compare left={pathOf0()} right={pathOf1()} onClose={() => setCompareOpen(false)} />
+      </Show>
+      <Show when={duplicates()}>
+        {(root) => <Duplicates rootPath={root()} onClose={() => setDuplicates(null)} />}
       </Show>
     </div>
   );

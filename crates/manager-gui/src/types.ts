@@ -125,3 +125,26 @@ export interface CompareProgressEvent {
 }
 
 export type SyncDirection = "leftToRight" | "rightToLeft" | "newer";
+
+/** One group of files with identical content. */
+export interface DuplicateGroupDto {
+  /** How many bytes each copy wastes. */
+  size: number;
+  files: EntryDto[];
+}
+
+/** Sent once when a duplicate search ends, however it ends. */
+export interface DuplicateReportDto {
+  groups: number;
+  /** Copies that could be removed, keeping one of each group. */
+  extraFiles: number;
+  scanned: number;
+  unreadable: number;
+  cancelled: boolean;
+}
+
+/** The payload of a `duplicates-progress` event. */
+export interface DuplicatesProgressEvent {
+  scanned: number;
+  found: number;
+}
