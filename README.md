@@ -18,6 +18,14 @@ cargo run -- ~/Downloads /tmp     # choose both panels
 cargo test --workspace            # run all tests
 ```
 
+The desktop GUI is a separate, early shell (see [below](#gui-shell)):
+
+```sh
+cd crates/manager-gui
+npm install
+npm run tauri dev
+```
+
 | Keys | Action |
 |---|---|
 | ↑ ↓ PgUp PgDn Home End | Move |
@@ -68,6 +76,9 @@ conflict. When something fails: **R**etry, **S**kip, skip **A**ll, or **C**ancel
 | `crates/manager-tui/src/app.rs` | TUI state and key handling (no terminal or disk access, fully unit-tested) |
 | `crates/manager-tui/src/ui.rs` | Drawing the screen with Ratatui |
 | `crates/manager-tui/src/main.rs` | Event loop; runs disk work in the background |
+| `crates/manager-gui/src-tauri/src/commands.rs` | The IPC surface: thin Tauri commands that call straight into `manager-core` |
+| `crates/manager-gui/src-tauri/src/dto.rs` | The plain, JSON-friendly shapes that cross into JavaScript, and nothing else |
+| `crates/manager-gui/src/Panel.tsx` | One pane: fetches a listing, holds its cursor, handles its own keys |
 
 ## Viewing a file
 
@@ -182,6 +193,31 @@ else — the job engine doesn't know the difference.
 Archives are **read-only** for now: you can look in one and take things out, but not put
 things in. Formats not covered yet: 7z, RAR, `.tar.bz2`, `.tar.xz`, and archives inside
 other archives (the paths already describe them; nothing extracts them yet).
+
+## GUI shell
+
+`crates/manager-gui` is a Tauri 2 + SolidJS desktop app, early and deliberately thin: two
+panels, arrow keys, Enter to open a folder, Backspace to go up, Tab to switch panels,
+click and double-click. It reuses `manager-core` directly — the Rust side has exactly two
+commands, `list_dir` and `home_dir` — so sorting and folders-first ordering are the same
+`sort_entries` the terminal version calls, not a second implementation.
+
+What it doesn't have yet, on purpose rather than by oversight: copying, moving, deleting,
+marking, jobs, previews, search, compare, duplicates, or SFTP. All of that already works
+in the terminal version; bringing it to the GUI is real, separate work, one piece at a
+time, not assumed to come along for free.
+
+```sh
+cd crates/manager-gui
+npm install
+npm run tauri dev      # a real window, hot-reloading
+npm run tauri build    # a shippable binary
+```
+
+On Linux, building this needs GTK3 and webkit2gtk's development headers installed first
+(`libgtk-3-dev`, `libwebkit2gtk-4.1-dev` on Debian/Ubuntu; `gtk3-devel`,
+`webkit2gtk4.1-devel` on Fedora). Windows and macOS need nothing extra — they already have
+WebView2 and WKWebView.
 
 ## License
 

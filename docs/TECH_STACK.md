@@ -195,7 +195,12 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
 5. ✅ **Archives as folders** – enter a `.zip`, `.tar` or `.tar.gz` like a directory, and
    copy out of it with the ordinary job engine. Read-only; 7z, RAR, bzip2/xz tars and
    archives nested inside archives are still to come.
-6. **GUI v0** – Tauri desktop shell reusing the same core.
+6. ✅ **GUI v0** – Tauri 2 + SolidJS, reusing `manager-core` directly (two thin commands,
+   `list_dir` and `home_dir`; no logic duplicated — sorting is the same `sort_entries`
+   the terminal calls). Two panels, keyboard navigation (arrows, Enter, Backspace, Tab),
+   click and double-click. Deliberately a *shell*, not feature parity: no copy/move/jobs,
+   no marking, no search/compare/duplicates/SFTP dialogs, no previews yet — all of that is
+   real further work, tracked as its own decision rather than assumed. See `crates/manager-gui/`.
 7. **Previews / quick view** – text, images, PDF, media.
    - ✅ F3 in the terminal: text with encoding detection, hex, wrapping. Reads through
      the `Vfs`, so it works inside archives with no extra code.

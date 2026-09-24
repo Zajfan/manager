@@ -1,0 +1,154 @@
+/* A plain, dark, monospace look — closer to the terminal version's own
+   colours than to a typical desktop app, since that's the whole point of
+   sharing one core: the two should feel like the same program. */
+
+:root {
+  color-scheme: dark;
+  --bg: #12141a;
+  --panel-bg: #1a1d26;
+  --border: #2c3040;
+  --text: #d4d8e2;
+  --dim: #6b7280;
+  --accent: #3b6ea5;
+  --accent-text: #ffffff;
+  --dir: #7fb3e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SF Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panels {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  margin: 4px;
+  border-radius: 4px;
+  outline: none;
+  overflow: hidden;
+}
+
+.panel.active {
+  border-color: var(--accent);
+}
+
+.panel-header {
+  padding: 4px 8px;
+  background: var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.panel-status {
+  padding: 8px;
+  color: var(--dim);
+}
+
+.panel-status.error {
+  color: #e07070;
+}
+
+.panel-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  overflow-y: auto;
+  display: block;
+}
+
+.panel-table thead,
+.panel-table tbody {
+  display: block;
+}
+
+.panel-table tr {
+  display: flex;
+  width: 100%;
+}
+
+.panel-table th,
+.panel-table td {
+  padding: 2px 8px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-table th {
+  color: var(--dim);
+  font-weight: normal;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-table td.name {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-table td.name.dir,
+.panel-table th.size,
+.panel-table td.size,
+.panel-table th.date,
+.panel-table td.date {
+  color: var(--dim);
+}
+
+.panel-table td.name.dir {
+  color: var(--dir);
+  font-weight: bold;
+}
+
+.panel-table th.size,
+.panel-table td.size {
+  width: 70px;
+  text-align: right;
+}
+
+.panel-table th.date,
+.panel-table td.date {
+  width: 130px;
+}
+
+.panel-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.panel-table tbody tr.selected {
+  background: var(--accent);
+}
+
+.panel-table tbody tr.selected td,
+.panel-table tbody tr.selected td.name.dir {
+  color: var(--accent-text);
+}

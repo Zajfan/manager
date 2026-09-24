@@ -1,7 +1,21 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+# `crates/*` reaches every crate except the GUI: Tauri's own convention nests
+# the Rust side one level deeper, at `crates/manager-gui/src-tauri`, so that
+# path is listed explicitly.
+members = ["crates/*", "crates/manager-gui/src-tauri"]
+# `crates/*` would also try (and fail) to treat `crates/manager-gui` itself
+# as a member: it has no `Cargo.toml` of its own, only its nested
+# `src-tauri` does.
+exclude = ["crates/manager-gui"]
 default-members = ["crates/manager-tui"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
 
 [workspace.package]
 version = "0.1.0"
