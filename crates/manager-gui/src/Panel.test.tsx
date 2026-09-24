@@ -9,7 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Panel } from "./Panel";
 import type { ListingDto } from "./types";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  clearListeners();
+});
 
 function listing(path: string, names: [string, boolean][]): ListingDto {
   return {
@@ -27,7 +30,9 @@ function listing(path: string, names: [string, boolean][]): ListingDto {
   };
 }
 
-/** A fake `invoke` that answers `list_dir` from a `path -> ListingDto` map. */
+/** A fake `invoke` that answers `list_dir` from a `path -> ListingDto` map,
+ * and `start_delete` / `job_action` with a fixed job id so tests can drive
+ * the rest of the flow through fake `job-progress` / `job-finished` events. */
 function fakeInvoke(byPath: Record<string, ListingDto>) {
   return vi.fn(async (command: string, args?: Record<string, unknown>) => {
     if (command === "list_dir") {
@@ -36,12 +41,43 @@ function fakeInvoke(byPath: Record<string, ListingDto>) {
       if (!found) throw new Error(`no fixture for ${path}`);
       return found;
     }
+    if (command === "start_delete") {
+      return { id: 1, title: `Delete ${(args?.targets as string[]).length} items` };
+    }
+    if (command === "job_action") {
+      return undefined;
+    }
     throw new Error(`unexpected command: ${command}`);
   });
 }
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => (globalThis as any).__invoke(...args),
+}));
+
+/** `vi.mock` factories can't close over outer variables, so the handler
+ * registry itself is created through `vi.hoisted` and shared by both the
+ * mock's `listen` and the `emitTauriEvent` helper tests fire below. */
+const { registerListener, emitTauriEvent, clearListeners } = vi.hoisted(() => {
+  let handlers: Record<string, ((event: { payload: unknown }) => void)[]> = {};
+  return {
+    registerListener(name: string, handler: (event: { payload: unknown }) => void) {
+      (handlers[name] ??= []).push(handler);
+      return Promise.resolve(() => {
+        handlers[name] = (handlers[name] ?? []).filter((h) => h !== handler);
+      });
+    },
+    emitTauriEvent(name: string, payload: unknown) {
+      for (const handler of handlers[name] ?? []) handler({ payload });
+    },
+    clearListeners() {
+      handlers = {};
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: registerListener,
 }));
 
 function setup(byPath: Record<string, ListingDto>) {
@@ -206,6 +242,116 @@ describe("Panel", () => {
 
     expect(await screen.findByText("a.txt")).toBeInTheDocument();
     expect(screen.getByText("a.txt").closest("tr")!.className).not.toContain("marked");
+  });
+
+  it("Delete asks for confirmation naming the marked items, and Escape cancels it", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: " " }); // marks a.txt
+    fireEvent.keyDown(panel, { key: "Delete" });
+
+    expect(await screen.findByText(/Delete 1 item\?/)).toBeInTheDocument();
+
+    fireEvent.keyDown(panel, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText(/Delete 1 item\?/)).not.toBeInTheDocument());
+  });
+
+  it("Delete with nothing marked falls back to the entry under the cursor", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "ArrowDown" }); // cursor on b.txt
+    fireEvent.keyDown(panel, { key: "Delete" });
+
+    expect(await screen.findByText(/Delete 1 item\?/)).toBeInTheDocument();
+  });
+
+  it("Shift+Delete asks to delete permanently", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete", shiftKey: true });
+
+    expect(await screen.findByText(/Delete permanently 1 item\?/)).toBeInTheDocument();
+  });
+
+  it("confirming a delete calls start_delete with the marked paths, then shows progress from job-progress events", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: " " }); // marks a.txt
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("start_delete", {
+        targets: ["file:///home/a.txt"],
+        permanent: false,
+      }),
+    );
+    // The mark clears as soon as the job is handed off, same as the terminal version.
+    expect(screen.getByText("a.txt").closest("tr")!.className).not.toContain("marked");
+
+    emitTauriEvent("job-progress", { id: 1, progress: { fraction: 0.5 } });
+
+    expect(await screen.findByText(/50%/)).toBeInTheDocument();
+  });
+
+  it("a job-finished event for this panel's job clears the status and reloads the folder", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+
+    emitTauriEvent("job-finished", { id: 1, title: "Delete 1 item", outcome: "completed" });
+
+    await waitFor(() => expect(screen.queryByText(/Delete 1 item/)).not.toBeInTheDocument());
+    // Refetched the same folder — list_dir called again for file:///home/.
+    const listDirCalls = invoke.mock.calls.filter(([cmd]) => cmd === "list_dir");
+    expect(listDirCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("Escape while a job is running cancels it", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+
+    fireEvent.keyDown(panel, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("job_action", { id: 1, action: "cancel" }),
+    );
   });
 
   it("shows an empty folder plainly rather than a blank table", async () => {

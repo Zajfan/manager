@@ -9,20 +9,24 @@
 
 use std::sync::Arc;
 
+use manager_core::jobs::JobSpec;
 use manager_core::{sort_entries, Router, SortKey, SortOrder, SortSpec, VPath, Vfs};
 
-use crate::dto::ListingDto;
+use crate::dto::{JobStartedDto, ListingDto};
+use crate::jobs::JobsState;
 
 /// Held for the app's whole lifetime, the same way `manager-tui`'s event
 /// loop holds one `Router` and hands out clones of it to whatever needs one.
 pub struct AppState {
     pub router: Arc<Router>,
+    pub jobs: JobsState,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    pub fn new(app: tauri::AppHandle) -> Self {
         AppState {
             router: Arc::new(Router::new()),
+            jobs: JobsState::new(app),
         }
     }
 }
@@ -79,4 +83,53 @@ pub fn home_dir() -> String {
     VPath::local(&home)
         .map(|p| p.to_uri())
         .unwrap_or_else(|_| VPath::local("/").expect("the root always parses").to_uri())
+}
+
+/// Moves `targets` to the trash, or deletes them for good if `permanent`.
+/// Each is a `VPath` URI, the same way every other path crosses the IPC
+/// boundary. Progress and the eventual result arrive as `job-progress` and
+/// `job-finished` events, not as this command's return value.
+#[tauri::command]
+pub fn start_delete(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    targets: Vec<String>,
+    permanent: bool,
+) -> Result<JobStartedDto, String> {
+    let targets = targets
+        .iter()
+        .map(|t| VPath::parse(t))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let spec = JobSpec::Delete { targets, permanent };
+    let title = spec.title();
+    let handle = state
+        .jobs
+        .start(Arc::clone(&state.router) as Arc<dyn Vfs>, spec, app);
+    Ok(JobStartedDto {
+        id: handle.id(),
+        title,
+    })
+}
+
+/// Pauses, resumes or cancels a running job. `action` is `"pause"`,
+/// `"resume"` or `"cancel"`.
+#[tauri::command]
+pub fn job_action(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    action: String,
+) -> Result<(), String> {
+    state.jobs.control(id, &action)
+}
+
+/// Answers a job's "something failed" question. `answer` is `"retry"`,
+/// `"skip"`, `"skipAll"` or `"cancel"`.
+#[tauri::command]
+pub fn answer_error(
+    state: tauri::State<'_, AppState>,
+    job: u64,
+    answer: String,
+) -> Result<(), String> {
+    state.jobs.answer_error(job, &answer)
 }

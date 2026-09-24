@@ -22,3 +22,42 @@ export interface ListingDto {
   parent: string | null;
   entries: EntryDto[];
 }
+
+export type Phase = "scanning" | "working" | "done";
+
+export interface ProgressDto {
+  phase: Phase;
+  totalBytes: number;
+  doneBytes: number;
+  totalItems: number;
+  doneItems: number;
+  /** What's being worked on right now, as a `VPath` URI, or `null`. */
+  current: string | null;
+  elapsedMs: number;
+  paused: boolean;
+  /** 0..=1, already computed on the Rust side. */
+  fraction: number;
+}
+
+export interface JobStartedDto {
+  id: number;
+  title: string;
+}
+
+export type Outcome = "completed" | "cancelled";
+
+export interface JobReportDto {
+  id: number;
+  title: string;
+  outcome: Outcome;
+  items: number;
+  bytes: number;
+  skipped: number;
+  elapsedMs: number;
+}
+
+/** The payload of a `job-progress` Tauri event. */
+export interface JobProgressEvent {
+  id: number;
+  progress: ProgressDto;
+}

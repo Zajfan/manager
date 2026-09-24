@@ -3,11 +3,29 @@
 // opinion about sorting or filtering — it just shows what `list_dir` (Rust,
 // the same code the terminal version calls) already decided.
 
-import { For, Show, createEffect, createResource, createSignal } from "solid-js";
+import { For, Show, createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { clampCursor, entryToOpen, moveCursor as moveCursorTo, toggleMark } from "./panelLogic";
-import type { EntryDto, ListingDto } from "./types";
+import { cancelJob, onJobFinished, onJobProgress, startDelete } from "./jobs";
+import {
+  clampCursor,
+  entryToOpen,
+  moveCursor as moveCursorTo,
+  selection,
+  toggleMark,
+} from "./panelLogic";
+import type { EntryDto, ListingDto, ProgressDto } from "./types";
 import { formatDate, formatSize } from "./format";
+
+interface ActiveJob {
+  id: number;
+  title: string;
+  progress?: ProgressDto;
+}
+
+interface PendingDelete {
+  targets: EntryDto[];
+  permanent: boolean;
+}
 
 export interface PanelProps {
   initialPath: string;
@@ -28,7 +46,24 @@ export function Panel(props: PanelProps) {
   const [path, setPath] = createSignal(props.initialPath);
   const [cursor, setCursor] = createSignal(0);
   const [marked, setMarked] = createSignal<Set<string>>(new Set());
-  const [listing] = createResource(path, fetchListing);
+  const [confirmDelete, setConfirmDelete] = createSignal<PendingDelete | null>(null);
+  const [activeJob, setActiveJob] = createSignal<ActiveJob | null>(null);
+  const [listing, { refetch }] = createResource(path, fetchListing);
+
+  onMount(() => {
+    const progress = onJobProgress((event) => {
+      setActiveJob((job) => (job && job.id === event.id ? { ...job, progress: event.progress } : job));
+    });
+    const finished = onJobFinished((report) => {
+      if (activeJob()?.id !== report.id) return;
+      setActiveJob(null);
+      refetch();
+    });
+    onCleanup(() => {
+      void progress.then((unlisten) => unlisten());
+      void finished.then((unlisten) => unlisten());
+    });
+  });
 
   let container: HTMLDivElement | undefined;
   createEffect(() => {
@@ -73,8 +108,37 @@ export function Panel(props: PanelProps) {
     moveCursor(1);
   }
 
+  function askToDelete(permanent: boolean) {
+    const targets = selection(entries(), marked(), cursor());
+    if (targets.length > 0) setConfirmDelete({ targets, permanent });
+  }
+
+  async function runDelete(pending: PendingDelete) {
+    setConfirmDelete(null);
+    setMarked(new Set<string>());
+    const started = await startDelete(
+      pending.targets.map((e) => e.path),
+      pending.permanent,
+    );
+    setActiveJob({ id: started.id, title: started.title });
+  }
+
   function handleKey(event: KeyboardEvent) {
     if (!props.active()) return;
+
+    const pending = confirmDelete();
+    if (pending) {
+      if (event.key === "Enter") {
+        void runDelete(pending);
+      } else if (event.key === "Escape") {
+        setConfirmDelete(null);
+      } else {
+        return;
+      }
+      event.preventDefault();
+      return;
+    }
+
     switch (event.key) {
       case "ArrowDown":
         moveCursor(1);
@@ -92,6 +156,16 @@ export function Panel(props: PanelProps) {
       case " ":
         toggleMarkAtCursor();
         break;
+      case "Delete":
+      case "F8":
+        askToDelete(event.shiftKey);
+        break;
+      case "Escape": {
+        const job = activeJob();
+        if (!job) return;
+        void cancelJob(job.id);
+        break;
+      }
       default:
         return; // let anything else (Tab, for switching panels) bubble up
     }
@@ -110,6 +184,23 @@ export function Panel(props: PanelProps) {
       <div class="panel-header" title={path()}>
         {path()}
       </div>
+      <Show when={confirmDelete()}>
+        {(pending) => (
+          <div class="panel-status confirm">
+            {pending().permanent ? "Delete permanently" : "Delete"} {pending().targets.length}{" "}
+            item{pending().targets.length === 1 ? "" : "s"}? Enter to confirm, Esc to cancel.
+          </div>
+        )}
+      </Show>
+      <Show when={activeJob()}>
+        {(job) => (
+          <div class="panel-status job">
+            {job().title}
+            {job().progress ? ` — ${Math.round(job().progress!.fraction * 100)}%` : "…"}
+            {" (Esc to cancel)"}
+          </div>
+        )}
+      </Show>
       <Show
         when={!listing.loading}
         fallback={<div class="panel-status">Reading...</div>}

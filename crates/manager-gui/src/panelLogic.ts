@@ -25,6 +25,22 @@ export function toggleMark(marked: ReadonlySet<string>, name: string): Set<strin
 }
 
 /**
+ * What an action like delete or copy should act on: every marked entry, in
+ * display order, or — when nothing is marked — just the one under the
+ * cursor. Mirrors `manager-tui`'s own `App::selection`.
+ */
+export function selection(
+  entries: EntryDto[],
+  marked: ReadonlySet<string>,
+  cursor: number,
+): EntryDto[] {
+  const markedEntries = entries.filter((e) => marked.has(e.name));
+  if (markedEntries.length > 0) return markedEntries;
+  const current = entries[cursor];
+  return current ? [current] : [];
+}
+
+/**
  * The entry Enter should open, or `null` if there isn't one (an empty
  * folder, or the entry under the cursor isn't something Enter can open).
  */

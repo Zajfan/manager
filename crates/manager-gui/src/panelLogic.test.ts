@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampCursor, entryToOpen, moveCursor, toggleMark } from "./panelLogic";
+import { clampCursor, entryToOpen, moveCursor, selection, toggleMark } from "./panelLogic";
 import type { EntryDto } from "./types";
 
 function file(name: string, isDirLike = false): EntryDto {
@@ -71,6 +71,23 @@ describe("toggleMark", () => {
     const original = new Set(["a.txt"]);
     toggleMark(original, "b.txt");
     expect(original.has("b.txt")).toBe(false);
+  });
+});
+
+describe("selection", () => {
+  it("returns marked entries in display order when something is marked", () => {
+    const entries = [file("a.txt"), file("b.txt"), file("c.txt")];
+    const marked = new Set(["c.txt", "a.txt"]);
+    expect(selection(entries, marked, 1).map((e) => e.name)).toEqual(["a.txt", "c.txt"]);
+  });
+
+  it("falls back to the entry under the cursor when nothing is marked", () => {
+    const entries = [file("a.txt"), file("b.txt")];
+    expect(selection(entries, new Set(), 1).map((e) => e.name)).toEqual(["b.txt"]);
+  });
+
+  it("is empty when nothing is marked and the list is empty", () => {
+    expect(selection([], new Set(), 0)).toEqual([]);
   });
 });
 

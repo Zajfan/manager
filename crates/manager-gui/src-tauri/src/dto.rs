@@ -9,6 +9,7 @@
 
 use std::time::SystemTime;
 
+use manager_core::jobs::{JobReport, Outcome, Phase, Progress};
 use manager_core::{Entry, EntryKind, VPath};
 use serde::Serialize;
 
@@ -62,6 +63,87 @@ fn to_millis(time: SystemTime) -> Option<i64> {
     time.duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_millis()).ok())
+}
+
+/// A background job's progress, exactly as `manager-core` computed it — the
+/// frontend never recomputes a percentage itself, it just displays
+/// `fraction`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressDto {
+    /// `"scanning"`, `"working"` or `"done"`.
+    pub phase: &'static str,
+    pub total_bytes: u64,
+    pub done_bytes: u64,
+    pub total_items: u64,
+    pub done_items: u64,
+    /// What's being worked on right now, as a `VPath` URI.
+    pub current: Option<String>,
+    pub elapsed_ms: u64,
+    pub paused: bool,
+    /// 0.0..=1.0, already computed the same way the terminal version's
+    /// progress bar computes it.
+    pub fraction: f64,
+}
+
+impl From<&Progress> for ProgressDto {
+    fn from(progress: &Progress) -> Self {
+        ProgressDto {
+            phase: match progress.phase {
+                Phase::Scanning => "scanning",
+                Phase::Working => "working",
+                Phase::Done => "done",
+            },
+            total_bytes: progress.total_bytes,
+            done_bytes: progress.done_bytes,
+            total_items: progress.total_items,
+            done_items: progress.done_items,
+            current: progress.current.as_ref().map(VPath::to_uri),
+            elapsed_ms: progress.elapsed.as_millis() as u64,
+            paused: progress.paused,
+            fraction: progress.fraction(),
+        }
+    }
+}
+
+/// Sent once when a job ends, however it ends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobReportDto {
+    pub id: u64,
+    pub title: String,
+    /// `"completed"` or `"cancelled"`.
+    pub outcome: &'static str,
+    pub items: u64,
+    pub bytes: u64,
+    pub skipped: u64,
+    pub elapsed_ms: u64,
+}
+
+impl From<&JobReport> for JobReportDto {
+    fn from(report: &JobReport) -> Self {
+        JobReportDto {
+            id: report.job,
+            title: report.title.clone(),
+            outcome: match report.outcome {
+                Outcome::Completed => "completed",
+                Outcome::Cancelled => "cancelled",
+            },
+            items: report.items,
+            bytes: report.bytes,
+            skipped: report.skipped,
+            elapsed_ms: report.elapsed.as_millis() as u64,
+        }
+    }
+}
+
+/// What starting a job hands straight back — everything after this arrives
+/// as a `job-progress` or `job-finished` event instead.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobStartedDto {
+    pub id: u64,
+    pub title: String,
 }
 
 /// A folder's contents, and the path to it and its parent — everything one
@@ -202,5 +284,49 @@ mod tests {
         assert_eq!(json["kind"], "dir");
         assert_eq!(json["isDirLike"], true);
         assert_eq!(json["modifiedMs"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_progress_carries_its_own_fraction_so_the_frontend_never_computes_it() {
+        let mut progress = Progress {
+            phase: Phase::Working,
+            total_bytes: 200,
+            done_bytes: 50,
+            ..Progress::default()
+        };
+        let dto = ProgressDto::from(&progress);
+        assert_eq!(dto.fraction, 0.25);
+
+        progress.phase = Phase::Done;
+        assert_eq!(ProgressDto::from(&progress).phase, "done");
+    }
+
+    #[test]
+    fn progress_phase_serializes_lowercase() {
+        let dto = ProgressDto::from(&Progress {
+            phase: Phase::Scanning,
+            ..Progress::default()
+        });
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["phase"], "scanning");
+        assert_eq!(json["totalBytes"], 0);
+    }
+
+    #[test]
+    fn a_job_reports_outcome_as_a_plain_string() {
+        let report = JobReport {
+            job: 7,
+            title: "Trash 3 items".into(),
+            outcome: Outcome::Cancelled,
+            items: 2,
+            bytes: 10,
+            skipped: 1,
+            elapsed: Duration::from_millis(500),
+        };
+        let dto = JobReportDto::from(&report);
+        assert_eq!(dto.id, 7);
+        assert_eq!(dto.outcome, "cancelled");
+        assert_eq!(dto.skipped, 1);
+        assert_eq!(dto.elapsed_ms, 500);
     }
 }

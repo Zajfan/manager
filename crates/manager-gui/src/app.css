@@ -79,6 +79,16 @@ body {
   color: #e07070;
 }
 
+.panel-status.confirm {
+  color: var(--marked);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-status.job {
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+
 .panel-table {
   width: 100%;
   border-collapse: collapse;
