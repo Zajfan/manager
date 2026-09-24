@@ -206,17 +206,17 @@ pre-filled with the other panel's path, editable the same way the terminal versi
 (a relative name like `backup` or `../elsewhere` is taken relative to where the items
 are, an absolute path or another `scheme://` URI replaces it outright). All three run
 through the same background job engine the terminal version uses, with a progress
-readout and Esc to cancel. It reuses `manager-core` directly: sorting, folders-first
-ordering and the job engine itself are the same code the terminal version calls, not a
-second implementation.
+readout, and asks the same questions the terminal version's dialogs do when something
+needs a decision: a destination that already exists (**O**verwrite, **U**pdate if older,
+**S**kip, **R**ename, **C**ancel) or a failed item (**R**etry, **S**kip, skip **A**ll,
+**C**ancel) — hold Shift on a conflict answer to use it for every later conflict in that
+job, too. Esc cancels a running job, or answers its current question the same as C. It
+reuses `manager-core` directly: sorting, folders-first ordering and the job engine itself
+are the same code the terminal version calls, not a second implementation.
 
 What it doesn't have yet, on purpose rather than by oversight: previews, search, compare,
-duplicates, or SFTP. It also doesn't yet ask what to do about a failed item (permission
-denied, say) or a destination that already exists, the way the terminal version's error
-and conflict dialogs do — for now such an item is simply skipped and counted in the job's
-report. All of that already
-works in the terminal version; bringing it to the GUI is real, separate work, not assumed
-to come along for free.
+duplicates, or SFTP. All of that already works in the terminal version; bringing it to
+the GUI is real, separate work, not assumed to come along for free.
 
 ```sh
 cd crates/manager-gui

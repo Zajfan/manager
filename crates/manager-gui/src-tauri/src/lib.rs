@@ -20,6 +20,7 @@ pub fn run() {
             commands::start_transfer,
             commands::job_action,
             commands::answer_error,
+            commands::answer_conflict,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

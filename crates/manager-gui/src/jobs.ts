@@ -5,7 +5,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { JobProgressEvent, JobReportDto, JobStartedDto } from "./types";
+import type {
+  ConflictQuestionDto,
+  ErrorQuestionDto,
+  JobProgressEvent,
+  JobReportDto,
+  JobStartedDto,
+} from "./types";
 
 export function startDelete(targets: string[], permanent: boolean): Promise<JobStartedDto> {
   return invoke<JobStartedDto>("start_delete", { targets, permanent });
@@ -30,4 +36,30 @@ export function onJobProgress(handler: (event: JobProgressEvent) => void): Promi
 
 export function onJobFinished(handler: (report: JobReportDto) => void): Promise<UnlistenFn> {
   return listen<JobReportDto>("job-finished", (e) => handler(e.payload));
+}
+
+export function onJobConflict(
+  handler: (question: ConflictQuestionDto) => void,
+): Promise<UnlistenFn> {
+  return listen<ConflictQuestionDto>("job-conflict", (e) => handler(e.payload));
+}
+
+export function onJobError(handler: (question: ErrorQuestionDto) => void): Promise<UnlistenFn> {
+  return listen<ErrorQuestionDto>("job-error", (e) => handler(e.payload));
+}
+
+export type ConflictAction = "overwrite" | "overwriteOlder" | "skip" | "rename" | "cancel";
+
+export function answerConflict(
+  job: number,
+  action: ConflictAction,
+  applyToAll: boolean,
+): Promise<void> {
+  return invoke("answer_conflict", { job, action, applyToAll });
+}
+
+export type ErrorAction = "retry" | "skip" | "skipAll" | "cancel";
+
+export function answerError(job: number, answer: ErrorAction): Promise<void> {
+  return invoke("answer_error", { job, answer });
 }

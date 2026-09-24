@@ -9,7 +9,7 @@
 
 use std::time::SystemTime;
 
-use manager_core::jobs::{JobReport, Outcome, Phase, Progress};
+use manager_core::jobs::{ConflictQuestion, ErrorQuestion, JobReport, Outcome, Phase, Progress};
 use manager_core::{Entry, EntryKind, VPath};
 use serde::Serialize;
 
@@ -137,6 +137,46 @@ impl From<&JobReport> for JobReportDto {
     }
 }
 
+/// "The destination already has something in its way." Sent as a
+/// `job-conflict` event; answered through the `answer_conflict` command.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictQuestionDto {
+    pub job: u64,
+    /// What we're copying or moving.
+    pub source: EntryDto,
+    /// What's already at the destination.
+    pub existing: EntryDto,
+}
+
+impl From<&ConflictQuestion> for ConflictQuestionDto {
+    fn from(question: &ConflictQuestion) -> Self {
+        ConflictQuestionDto {
+            job: question.job,
+            source: EntryDto::from(&question.source),
+            existing: EntryDto::from(&question.existing),
+        }
+    }
+}
+
+/// "Something failed." Sent as a `job-error` event; answered through the
+/// `answer_error` command.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorQuestionDto {
+    pub job: u64,
+    pub message: String,
+}
+
+impl From<&ErrorQuestion> for ErrorQuestionDto {
+    fn from(question: &ErrorQuestion) -> Self {
+        ErrorQuestionDto {
+            job: question.job,
+            message: question.error.to_string(),
+        }
+    }
+}
+
 /// What starting a job hands straight back — everything after this arrives
 /// as a `job-progress` or `job-finished` event instead.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -171,7 +211,7 @@ impl ListingDto {
 mod tests {
     use std::time::Duration;
 
-    use manager_core::{LinkTarget, Permissions};
+    use manager_core::{Error, LinkTarget, Permissions};
 
     use super::*;
 
@@ -310,6 +350,27 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["phase"], "scanning");
         assert_eq!(json["totalBytes"], 0);
+    }
+
+    #[test]
+    fn a_conflict_carries_both_entries_as_dtos() {
+        let source = entry("notes.txt", EntryKind::File, 10);
+        let existing = entry("notes.txt", EntryKind::File, 20);
+        let (question, _answer) = ConflictQuestion::new(9, source, existing);
+
+        let dto = ConflictQuestionDto::from(&question);
+        assert_eq!(dto.job, 9);
+        assert_eq!(dto.source.size, 10);
+        assert_eq!(dto.existing.size, 20);
+    }
+
+    #[test]
+    fn an_error_becomes_its_job_and_a_readable_message() {
+        let (question, _answer) = ErrorQuestion::new(4, Error::NotFound(vp("/nope")));
+
+        let dto = ErrorQuestionDto::from(&question);
+        assert_eq!(dto.job, 4);
+        assert!(!dto.message.is_empty());
     }
 
     #[test]

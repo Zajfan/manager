@@ -5,7 +5,19 @@
 
 import { For, Show, createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelJob, onJobFinished, onJobProgress, startDelete, startTransfer } from "./jobs";
+import {
+  answerConflict,
+  answerError,
+  cancelJob,
+  onJobConflict,
+  onJobError,
+  onJobFinished,
+  onJobProgress,
+  startDelete,
+  startTransfer,
+  type ConflictAction,
+  type ErrorAction,
+} from "./jobs";
 import {
   clampCursor,
   entryToOpen,
@@ -13,13 +25,16 @@ import {
   selection,
   toggleMark,
 } from "./panelLogic";
-import type { EntryDto, ListingDto, ProgressDto } from "./types";
+import type { ConflictQuestionDto, ErrorQuestionDto, EntryDto, ListingDto, ProgressDto } from "./types";
 import { formatDate, formatSize } from "./format";
 
 interface ActiveJob {
   id: number;
   title: string;
   progress?: ProgressDto;
+  question?:
+    | { kind: "conflict"; data: ConflictQuestionDto }
+    | { kind: "error"; data: ErrorQuestionDto };
 }
 
 interface PendingDelete {
@@ -80,9 +95,17 @@ export function Panel(props: PanelProps) {
       setActiveJob(null);
       refetch();
     });
+    const conflict = onJobConflict((data) => {
+      setActiveJob((job) => (job && job.id === data.job ? { ...job, question: { kind: "conflict", data } } : job));
+    });
+    const error = onJobError((data) => {
+      setActiveJob((job) => (job && job.id === data.job ? { ...job, question: { kind: "error", data } } : job));
+    });
     onCleanup(() => {
       void progress.then((unlisten) => unlisten());
       void finished.then((unlisten) => unlisten());
+      void conflict.then((unlisten) => unlisten());
+      void error.then((unlisten) => unlisten());
     });
   });
 
@@ -164,8 +187,43 @@ export function Panel(props: PanelProps) {
     setActiveJob({ id: started.id, title: started.title });
   }
 
+  /** Conflict: o/u/s/r (Shift = apply to every later conflict in this job),
+   * c/Esc cancels. Error: r/s/a, c/Esc cancels. Mirrors `manager-tui`'s own
+   * `handle_question_key` exactly. Returns whether the key was consumed. */
+  function answerQuestion(event: KeyboardEvent, job: ActiveJob): boolean {
+    const question = job.question;
+    if (!question) return false;
+    const key = event.key === "Escape" ? "c" : event.key.toLowerCase();
+
+    if (question.kind === "conflict") {
+      const actions: Record<string, ConflictAction> = {
+        o: "overwrite",
+        u: "overwriteOlder",
+        s: "skip",
+        r: "rename",
+        c: "cancel",
+      };
+      const action = actions[key];
+      if (!action) return false;
+      void answerConflict(question.data.job, action, event.shiftKey);
+    } else {
+      const answers: Record<string, ErrorAction> = { r: "retry", s: "skip", a: "skipAll", c: "cancel" };
+      const answer = answers[key];
+      if (!answer) return false;
+      void answerError(question.data.job, answer);
+    }
+    setActiveJob((j) => (j ? { ...j, question: undefined } : j));
+    return true;
+  }
+
   function handleKey(event: KeyboardEvent) {
     if (!props.active()) return;
+
+    const job = activeJob();
+    if (job?.question) {
+      if (answerQuestion(event, job)) event.preventDefault();
+      return;
+    }
 
     const transfer = pendingTransfer();
     if (transfer) {
@@ -268,7 +326,22 @@ export function Panel(props: PanelProps) {
           </div>
         )}
       </Show>
-      <Show when={activeJob()}>
+      <Show when={activeJob()?.question} keyed>
+        {(question) =>
+          question.kind === "conflict" ? (
+            <div class="panel-status question">
+              "{question.data.source.name}" already exists (
+              {question.data.existing.isDirLike ? "folder" : formatSize(question.data.existing.size)}
+              ). O=Overwrite U=if newer S=Skip R=Rename C=Cancel (Shift = for every later conflict)
+            </div>
+          ) : (
+            <div class="panel-status question">
+              {question.data.message}. R=Retry S=Skip A=Skip all C=Cancel
+            </div>
+          )
+        }
+      </Show>
+      <Show when={!activeJob()?.question && activeJob()}>
         {(job) => (
           <div class="panel-status job">
             {job().title}

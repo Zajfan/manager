@@ -13,18 +13,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use manager_core::jobs::{
-    self, ConflictAction, ConflictAnswer, ErrorAnswer, ErrorQuestion, JobEvent, JobHandle, JobId,
-    JobSpec, Phase,
+    self, ConflictAction, ConflictAnswer, ConflictQuestion, ErrorAnswer, ErrorQuestion, JobEvent,
+    JobHandle, JobId, JobSpec, Phase,
 };
 use manager_core::Vfs;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
-use crate::dto::{JobReportDto, ProgressDto};
+use crate::dto::{ConflictQuestionDto, ErrorQuestionDto, JobReportDto, ProgressDto};
 
 pub struct JobsState {
     handles: Arc<Mutex<HashMap<JobId, Arc<JobHandle>>>>,
+    pending_conflicts: Arc<Mutex<HashMap<JobId, ConflictQuestion>>>,
     pending_errors: Arc<Mutex<HashMap<JobId, ErrorQuestion>>>,
     job_tx: mpsc::UnboundedSender<JobEvent>,
 }
@@ -35,10 +36,12 @@ impl JobsState {
     pub fn new(app: AppHandle) -> Self {
         let (job_tx, mut job_rx) = mpsc::unbounded_channel::<JobEvent>();
         let handles: Arc<Mutex<HashMap<JobId, Arc<JobHandle>>>> = Arc::default();
+        let pending_conflicts: Arc<Mutex<HashMap<JobId, ConflictQuestion>>> = Arc::default();
         let pending_errors: Arc<Mutex<HashMap<JobId, ErrorQuestion>>> = Arc::default();
 
         let task_handles = Arc::clone(&handles);
-        let task_pending = Arc::clone(&pending_errors);
+        let task_conflicts = Arc::clone(&pending_conflicts);
+        let task_errors = Arc::clone(&pending_errors);
         tauri::async_runtime::spawn(async move {
             while let Some(event) = job_rx.recv().await {
                 match event {
@@ -47,21 +50,17 @@ impl JobsState {
                         let _ = app.emit("job-finished", JobReportDto::from(&report));
                     }
                     JobEvent::Error(question) => {
-                        let job = question.job;
-                        let message = question.error.to_string();
-                        task_pending.lock().unwrap().insert(job, question);
-                        let _ = app.emit("job-error", ErrorEventDto { job, message });
+                        let dto = ErrorQuestionDto::from(&question);
+                        task_errors.lock().unwrap().insert(question.job, question);
+                        let _ = app.emit("job-error", dto);
                     }
                     JobEvent::Conflict(question) => {
-                        // Only Copy and Move can ever produce a conflict, and
-                        // neither is wired into the GUI yet — answered right
-                        // away so a job can never hang forever waiting on a
-                        // dialog that doesn't exist. A real conflict dialog
-                        // arrives along with Copy/Move themselves.
-                        question.answer(ConflictAnswer {
-                            action: ConflictAction::Skip,
-                            apply_to_all: false,
-                        });
+                        let dto = ConflictQuestionDto::from(question.as_ref());
+                        task_conflicts
+                            .lock()
+                            .unwrap()
+                            .insert(question.job, *question);
+                        let _ = app.emit("job-conflict", dto);
                     }
                 }
             }
@@ -69,6 +68,7 @@ impl JobsState {
 
         JobsState {
             handles,
+            pending_conflicts,
             pending_errors,
             job_tx,
         }
@@ -141,6 +141,34 @@ impl JobsState {
         question.answer(answer);
         Ok(())
     }
+
+    /// Answers a pending "destination already exists" question from `job`.
+    pub fn answer_conflict(
+        &self,
+        job: JobId,
+        action: &str,
+        apply_to_all: bool,
+    ) -> Result<(), String> {
+        let question = self
+            .pending_conflicts
+            .lock()
+            .unwrap()
+            .remove(&job)
+            .ok_or_else(|| "no pending conflict for that job".to_string())?;
+        let action = match action {
+            "overwrite" => ConflictAction::Overwrite,
+            "overwriteOlder" => ConflictAction::OverwriteOlder,
+            "skip" => ConflictAction::Skip,
+            "rename" => ConflictAction::Rename,
+            "cancel" => ConflictAction::Cancel,
+            other => return Err(format!("unknown conflict action: {other}")),
+        };
+        question.answer(ConflictAnswer {
+            action,
+            apply_to_all,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -148,11 +176,4 @@ impl JobsState {
 struct JobProgressEvent {
     id: JobId,
     progress: ProgressDto,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ErrorEventDto {
-    job: JobId,
-    message: String,
 }

@@ -171,3 +171,16 @@ pub fn answer_error(
 ) -> Result<(), String> {
     state.jobs.answer_error(job, &answer)
 }
+
+/// Answers a job's "destination already exists" question. `action` is
+/// `"overwrite"`, `"overwriteOlder"`, `"skip"`, `"rename"` or `"cancel"`;
+/// `apply_to_all` uses the same action for every later conflict in that job.
+#[tauri::command]
+pub fn answer_conflict(
+    state: tauri::State<'_, AppState>,
+    job: u64,
+    action: String,
+    apply_to_all: bool,
+) -> Result<(), String> {
+    state.jobs.answer_conflict(job, &action, apply_to_all)
+}

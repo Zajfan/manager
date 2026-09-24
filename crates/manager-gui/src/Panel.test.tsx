@@ -48,7 +48,7 @@ function fakeInvoke(byPath: Record<string, ListingDto>) {
       const verb = args?.isMove ? "Move" : "Copy";
       return { id: 1, title: `${verb} ${(args?.sources as string[]).length} items` };
     }
-    if (command === "job_action") {
+    if (command === "job_action" || command === "answer_conflict" || command === "answer_error") {
       return undefined;
     }
     throw new Error(`unexpected command: ${command}`);
@@ -355,6 +355,113 @@ describe("Panel", () => {
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("job_action", { id: 1, action: "cancel" }),
+    );
+  });
+
+  it("a job-conflict event shows the question, and O answers overwrite with apply-to-all off", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+
+    emitTauriEvent("job-conflict", {
+      job: 1,
+      source: { name: "a.txt", isDirLike: false, size: 5 },
+      existing: { name: "a.txt", isDirLike: false, size: 20 },
+    });
+
+    expect(await screen.findByText(/"a\.txt" already exists/)).toBeInTheDocument();
+    // The plain job-progress status is replaced while a question is open.
+    expect(screen.queryByText(/Delete 1 item/)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(panel, { key: "o" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("answer_conflict", {
+        job: 1,
+        action: "overwrite",
+        applyToAll: false,
+      }),
+    );
+    expect(screen.queryByText(/already exists/)).not.toBeInTheDocument();
+  });
+
+  it("Shift+U answers a conflict with overwriteOlder and apply-to-all on", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+    emitTauriEvent("job-conflict", {
+      job: 1,
+      source: { name: "a.txt", isDirLike: false, size: 5 },
+      existing: { name: "a.txt", isDirLike: false, size: 20 },
+    });
+    await screen.findByText(/already exists/);
+
+    fireEvent.keyDown(panel, { key: "U", shiftKey: true });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("answer_conflict", {
+        job: 1,
+        action: "overwriteOlder",
+        applyToAll: true,
+      }),
+    );
+  });
+
+  it("a job-error event shows the message, and S answers skip", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+
+    emitTauriEvent("job-error", { job: 1, message: "permission denied: a.txt" });
+
+    expect(await screen.findByText(/permission denied: a\.txt/)).toBeInTheDocument();
+
+    fireEvent.keyDown(panel, { key: "s" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("answer_error", { job: 1, answer: "skip" }),
+    );
+  });
+
+  it("Escape on a pending question cancels it, same as pressing C", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Delete" });
+    fireEvent.keyDown(panel, { key: "Enter" });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_delete", expect.anything()));
+    emitTauriEvent("job-error", { job: 1, message: "permission denied" });
+    await screen.findByText(/permission denied/);
+
+    fireEvent.keyDown(panel, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("answer_error", { job: 1, answer: "cancel" }),
     );
   });
 

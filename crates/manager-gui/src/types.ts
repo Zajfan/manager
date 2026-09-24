@@ -61,3 +61,19 @@ export interface JobProgressEvent {
   id: number;
   progress: ProgressDto;
 }
+
+/** The payload of a `job-conflict` event: the destination already has
+ * something in its way. */
+export interface ConflictQuestionDto {
+  job: number;
+  /** What's being copied or moved. */
+  source: EntryDto;
+  /** What's already at the destination. */
+  existing: EntryDto;
+}
+
+/** The payload of a `job-error` event. */
+export interface ErrorQuestionDto {
+  job: number;
+  message: string;
+}
