@@ -12,6 +12,7 @@
   --accent: #3b6ea5;
   --accent-text: #ffffff;
   --dir: #7fb3e8;
+  --marked: #e0b050;
 }
 
 * {
@@ -151,4 +152,9 @@ body {
 .panel-table tbody tr.selected td,
 .panel-table tbody tr.selected td.name.dir {
   color: var(--accent-text);
+}
+
+.panel-table tbody tr.marked td,
+.panel-table tbody tr.marked td.name.dir {
+  color: var(--marked);
 }

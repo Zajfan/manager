@@ -5,7 +5,7 @@
 
 import { For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { clampCursor, entryToOpen, moveCursor as moveCursorTo } from "./panelLogic";
+import { clampCursor, entryToOpen, moveCursor as moveCursorTo, toggleMark } from "./panelLogic";
 import type { EntryDto, ListingDto } from "./types";
 import { formatDate, formatSize } from "./format";
 
@@ -27,6 +27,7 @@ async function fetchListing(path: string): Promise<ListingDto> {
 export function Panel(props: PanelProps) {
   const [path, setPath] = createSignal(props.initialPath);
   const [cursor, setCursor] = createSignal(0);
+  const [marked, setMarked] = createSignal<Set<string>>(new Set());
   const [listing] = createResource(path, fetchListing);
 
   let container: HTMLDivElement | undefined;
@@ -53,6 +54,7 @@ export function Panel(props: PanelProps) {
     if (entry) {
       setPath(entry.path);
       setCursor(0);
+      setMarked(new Set<string>());
     }
   }
 
@@ -61,7 +63,14 @@ export function Panel(props: PanelProps) {
     if (parent) {
       setPath(parent);
       setCursor(0);
+      setMarked(new Set<string>());
     }
+  }
+
+  function toggleMarkAtCursor() {
+    const entry = entries()[cursor()];
+    if (entry) setMarked((m) => toggleMark(m, entry.name));
+    moveCursor(1);
   }
 
   function handleKey(event: KeyboardEvent) {
@@ -78,6 +87,10 @@ export function Panel(props: PanelProps) {
         break;
       case "Backspace":
         goUp();
+        break;
+      case "Insert":
+      case " ":
+        toggleMarkAtCursor();
         break;
       default:
         return; // let anything else (Tab, for switching panels) bubble up
@@ -117,7 +130,10 @@ export function Panel(props: PanelProps) {
               <For each={entries()}>
                 {(entry, index) => (
                   <tr
-                    classList={{ selected: index() === cursor() }}
+                    classList={{
+                      selected: index() === cursor(),
+                      marked: marked().has(entry.name),
+                    }}
                     onClick={() => {
                       setCursor(index());
                       props.onActivate();

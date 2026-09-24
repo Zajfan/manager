@@ -17,6 +17,13 @@ export function moveCursor(cursor: number, delta: number, length: number): numbe
   return clampCursor(cursor + delta, length);
 }
 
+/** Toggles `name` in `marked`, returning a new set — `marked` itself is untouched. */
+export function toggleMark(marked: ReadonlySet<string>, name: string): Set<string> {
+  const next = new Set(marked);
+  if (!next.delete(name)) next.add(name);
+  return next;
+}
+
 /**
  * The entry Enter should open, or `null` if there isn't one (an empty
  * folder, or the entry under the cursor isn't something Enter can open).

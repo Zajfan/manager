@@ -196,16 +196,19 @@ other archives (the paths already describe them; nothing extracts them yet).
 
 ## GUI shell
 
-`crates/manager-gui` is a Tauri 2 + SolidJS desktop app, early and deliberately thin: two
-panels, arrow keys, Enter to open a folder, Backspace to go up, Tab to switch panels,
-click and double-click. It reuses `manager-core` directly — the Rust side has exactly two
-commands, `list_dir` and `home_dir` — so sorting and folders-first ordering are the same
-`sort_entries` the terminal version calls, not a second implementation.
+`crates/manager-gui` is a Tauri 2 + SolidJS desktop app, early and growing towards the
+terminal version's feature set one piece at a time: two panels, arrow keys, Enter to open
+a folder, Backspace to go up, Tab to switch panels, click and double-click, and
+Space/Insert to mark a file or folder (shown in a different colour; cleared on navigating
+elsewhere, same as the terminal version). It reuses `manager-core` directly — the Rust
+side has exactly two commands, `list_dir` and `home_dir` — so sorting and folders-first
+ordering are the same `sort_entries` the terminal version calls, not a second
+implementation.
 
 What it doesn't have yet, on purpose rather than by oversight: copying, moving, deleting,
-marking, jobs, previews, search, compare, duplicates, or SFTP. All of that already works
-in the terminal version; bringing it to the GUI is real, separate work, one piece at a
-time, not assumed to come along for free.
+jobs, previews, search, compare, duplicates, or SFTP. All of that already works in the
+terminal version; bringing it to the GUI is real, separate work, not assumed to come
+along for free.
 
 ```sh
 cd crates/manager-gui

@@ -158,6 +158,56 @@ describe("Panel", () => {
     expect(await screen.findByText("deep.txt")).toBeInTheDocument();
   });
 
+  it("Space marks the row under the cursor and moves on", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const rowFor = (name: string) => screen.getByText(name).closest("tr")!;
+
+    fireEvent.keyDown(rowFor("a.txt").closest(".panel")!, { key: " " });
+
+    expect(rowFor("a.txt").className).toContain("marked");
+    expect(rowFor("b.txt").className).toContain("selected");
+  });
+
+  it("Insert on an already-marked row unmarks it", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const rowFor = (name: string) => screen.getByText(name).closest("tr")!;
+    const panel = rowFor("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "Insert" }); // marks a.txt, moves to b.txt
+    fireEvent.keyDown(panel, { key: "ArrowUp" }); // back to a.txt
+    fireEvent.keyDown(panel, { key: "Insert" }); // unmarks a.txt
+
+    expect(rowFor("a.txt").className).not.toContain("marked");
+  });
+
+  it("marking survives moving the cursor, but not navigating into a folder", async () => {
+    setup({
+      "file:///": listing("file:///", [["a.txt", false], ["docs", true]]),
+      "file:///docs": listing("file:///docs", [["deep.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: " " }); // marks a.txt, moves to docs
+    expect(screen.getByText("a.txt").closest("tr")!.className).toContain("marked");
+
+    fireEvent.keyDown(panel, { key: "Enter" }); // opens docs
+    await screen.findByText("deep.txt");
+    fireEvent.keyDown(panel, { key: "Backspace" }); // back to the root
+
+    expect(await screen.findByText("a.txt")).toBeInTheDocument();
+    expect(screen.getByText("a.txt").closest("tr")!.className).not.toContain("marked");
+  });
+
   it("shows an empty folder plainly rather than a blank table", async () => {
     setup({ "file:///home/": listing("file:///home/", []) });
     render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);

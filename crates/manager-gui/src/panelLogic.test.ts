@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampCursor, entryToOpen, moveCursor } from "./panelLogic";
+import { clampCursor, entryToOpen, moveCursor, toggleMark } from "./panelLogic";
 import type { EntryDto } from "./types";
 
 function file(name: string, isDirLike = false): EntryDto {
@@ -48,6 +48,29 @@ describe("moveCursor", () => {
 
   it("stops at the first row rather than going negative", () => {
     expect(moveCursor(1, -10, 5)).toBe(0);
+  });
+});
+
+describe("toggleMark", () => {
+  it("adds a name that wasn't marked", () => {
+    const result = toggleMark(new Set(), "a.txt");
+    expect(result.has("a.txt")).toBe(true);
+  });
+
+  it("removes a name that was already marked", () => {
+    const result = toggleMark(new Set(["a.txt"]), "a.txt");
+    expect(result.has("a.txt")).toBe(false);
+  });
+
+  it("leaves other marked names untouched", () => {
+    const result = toggleMark(new Set(["a.txt", "b.txt"]), "a.txt");
+    expect(result.has("b.txt")).toBe(true);
+  });
+
+  it("never mutates the set it was given", () => {
+    const original = new Set(["a.txt"]);
+    toggleMark(original, "b.txt");
+    expect(original.has("b.txt")).toBe(false);
   });
 });
 
