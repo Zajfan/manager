@@ -5,22 +5,23 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
   plugins: [solid()],
-
-  // Solid's package exports a separate build under the "browser" condition;
-  // Vitest runs in Node, so without forcing that condition here it resolves
-  // the dev/HMR build instead, which broke path handling on Windows CI
-  // (https://github.com/solidjs/vite-plugin-solid#testing, "vitest" section).
-  resolve: {
-    conditions: mode === "test" ? ["browser"] : [],
-  },
 
   // Component tests (`npm test`) render into a simulated DOM; nothing about
   // `tauri dev`/`tauri build` reads this section.
   test: {
     environment: "jsdom",
     setupFiles: ["./src/vitest-setup.ts"],
+    // Without this, Vitest transforms .tsx in SSR mode, so vite-plugin-solid's
+    // HMR transform emits an import of its "/@solid-refresh" virtual module —
+    // meaningless outside a real Vite dev server, and on Windows it isn't
+    // even a parseable path, crashing before a single test runs. Forcing the
+    // "web" transform for jsx/tsx is vite-plugin-solid's own documented
+    // Vitest setup (https://github.com/solidjs/vite-plugin-solid#testing).
+    transformMode: {
+      web: [/\.[jt]sx?$/],
+    },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
