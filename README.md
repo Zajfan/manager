@@ -234,6 +234,11 @@ the terminal version's full feature set, brought to the GUI one piece at a time 
 this project's history rather than all at once — see [docs/TECH_STACK.md](docs/TECH_STACK.md)
 for how each piece landed.
 
+The dual-pane layout above is one of several: a small button in the top-right
+corner switches between layouts at runtime (currently dual-pane and a thin
+single-pane Explorer-style view; more are planned). The choice is remembered
+between launches.
+
 What it doesn't have yet, on purpose rather than by oversight: previewing a file's
 contents (F3 in the terminal version). That already works there; bringing it to the GUI
 is real, separate work, not assumed to come along for free.

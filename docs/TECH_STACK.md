@@ -204,7 +204,12 @@ which keeps the TUI and GUI behaviour identical (same keymaps, same operations, 
    engine with its conflict/error dialogs, Alt+F7 search, Ctrl+F9 compare/sync, Ctrl+D
    duplicates, and Ctrl+N SFTP (once connected, a remote panel is an ordinary folder —
    every feature already works with it, since they're all built on the same `Vfs`). Only
-   previewing a file's contents (F3 in the terminal) hasn't made the jump yet. See
+   previewing a file's contents (F3 in the terminal) hasn't made the jump yet. The
+   dual-pane layout is now one of several selectable at runtime (a small
+   switcher button, persisted in settings via `tauri-plugin-store`) rather than
+   the only option — see `crates/manager-gui/src/shells/` and
+   `docs/superpowers/specs/2026-09-24-gui-layout-engine-design.md` for the
+   engine this enabled and what other layouts are planned. See
    `crates/manager-gui/`.
 7. **Previews / quick view** – text, images, PDF, media.
    - ✅ F3 in the terminal: text with encoding detection, hex, wrapping. Reads through
