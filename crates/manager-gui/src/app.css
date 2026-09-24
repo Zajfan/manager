@@ -300,3 +300,60 @@ body {
   color: var(--dim);
   background: var(--border);
 }
+
+.app-root {
+  height: 100%;
+  position: relative;
+}
+
+.layout-switcher-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+  background: var(--panel-bg);
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.layout-switcher-button:hover {
+  color: var(--text);
+}
+
+.layout-switcher-menu {
+  position: absolute;
+  top: 24px;
+  right: 4px;
+  z-index: 10;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.layout-switcher-menu button {
+  background: none;
+  color: var(--text);
+  border: none;
+  font: inherit;
+  text-align: left;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.layout-switcher-menu button:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.layout-switcher-menu button.active {
+  color: var(--marked);
+}
