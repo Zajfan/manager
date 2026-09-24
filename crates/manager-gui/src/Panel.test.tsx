@@ -44,6 +44,10 @@ function fakeInvoke(byPath: Record<string, ListingDto>) {
     if (command === "start_delete") {
       return { id: 1, title: `Delete ${(args?.targets as string[]).length} items` };
     }
+    if (command === "start_transfer") {
+      const verb = args?.isMove ? "Move" : "Copy";
+      return { id: 1, title: `${verb} ${(args?.sources as string[]).length} items` };
+    }
     if (command === "job_action") {
       return undefined;
     }
@@ -352,6 +356,110 @@ describe("Panel", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("job_action", { id: 1, action: "cancel" }),
     );
+  });
+
+  it("F5 opens a transfer prompt pre-filled with the other panel's path", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        otherPath={() => "file:///backup/"}
+      />
+    ));
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "F5" });
+
+    expect(await screen.findByText(/Copy 1 item/)).toBeInTheDocument();
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    expect(input.value).toBe("file:///backup/");
+  });
+
+  it("Escape closes the transfer prompt without starting anything", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "F6" });
+    expect(await screen.findByText(/Move 1 item/)).toBeInTheDocument();
+
+    fireEvent.keyDown(panel, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText(/Move 1 item/)).not.toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith("start_transfer", expect.anything());
+  });
+
+  it("editing the destination and pressing Enter starts the transfer with this panel as the base", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false], ["b.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: " " }); // marks a.txt
+    fireEvent.keyDown(panel, { key: "F5" }); // copy
+
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "../backup" } });
+    fireEvent.keyDown(panel, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("start_transfer", {
+        sources: ["file:///home/a.txt"],
+        base: "file:///home/",
+        dest: "../backup",
+        isMove: false,
+      }),
+    );
+    expect(screen.getByText("a.txt").closest("tr")!.className).not.toContain("marked");
+  });
+
+  it("F6 with nothing marked moves the entry under the cursor", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+    const panel = screen.getByText("a.txt").closest(".panel")!;
+
+    fireEvent.keyDown(panel, { key: "F6" });
+    fireEvent.keyDown(panel, { key: "Enter" }); // dest left as the pre-filled (empty) value
+
+    // Nothing typed and no otherPath supplied means an empty destination —
+    // submitting should be a no-op, not a call with a blank path.
+    await waitFor(() => expect(screen.getByText(/Move 1 item/)).toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith("start_transfer", expect.anything());
+  });
+
+  it("reports its own path changes so the other panel can default to it", async () => {
+    const onPathChange = vi.fn();
+    setup({
+      "file:///home/": listing("file:///home/", [["docs", true]]),
+      "file:///home/docs": listing("file:///home/docs", [["deep.txt", false]]),
+    });
+    render(() => (
+      <Panel
+        initialPath="file:///home/"
+        active={() => true}
+        onActivate={() => {}}
+        onPathChange={onPathChange}
+      />
+    ));
+    await screen.findByText("docs");
+    expect(onPathChange).toHaveBeenCalledWith("file:///home/");
+
+    fireEvent.keyDown(screen.getByText("docs").closest(".panel")!, { key: "Enter" });
+
+    await waitFor(() => expect(onPathChange).toHaveBeenCalledWith("file:///home/docs"));
   });
 
   it("shows an empty folder plainly rather than a blank table", async () => {

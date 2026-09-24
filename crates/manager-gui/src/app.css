@@ -84,6 +84,23 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.panel-status.transfer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.panel-status.transfer input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font: inherit;
+  padding: 1px 4px;
+}
+
 .panel-status.job {
   color: var(--accent);
   border-bottom: 1px solid var(--border);

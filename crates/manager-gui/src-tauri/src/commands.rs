@@ -112,6 +112,44 @@ pub fn start_delete(
     })
 }
 
+/// Copies (or, if `is_move`, moves) `sources` to `dest`. `dest` is resolved
+/// against `base` — the source panel's own path — exactly the way
+/// `manager-tui`'s transfer dialog resolves what's typed into it: a full
+/// path or URI is used as-is, but something relative like `backup` or
+/// `../elsewhere` is taken relative to `base`, not to `dest`'s own starting
+/// text. A destination that already has something in its way is skipped for
+/// now rather than asked about — see the README's GUI shell section.
+#[tauri::command]
+pub fn start_transfer(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    sources: Vec<String>,
+    base: String,
+    dest: String,
+    is_move: bool,
+) -> Result<JobStartedDto, String> {
+    let sources = sources
+        .iter()
+        .map(|s| VPath::parse(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let base = VPath::parse(&base).map_err(|e| e.to_string())?;
+    let dest = base.resolve(&dest).map_err(|e| e.to_string())?;
+    let spec = if is_move {
+        JobSpec::Move { sources, dest }
+    } else {
+        JobSpec::Copy { sources, dest }
+    };
+    let title = spec.title();
+    let handle = state
+        .jobs
+        .start(Arc::clone(&state.router) as Arc<dyn Vfs>, spec, app);
+    Ok(JobStartedDto {
+        id: handle.id(),
+        title,
+    })
+}
+
 /// Pauses, resumes or cancels a running job. `action` is `"pause"`,
 /// `"resume"` or `"cancel"`.
 #[tauri::command]

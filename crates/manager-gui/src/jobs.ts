@@ -11,6 +11,15 @@ export function startDelete(targets: string[], permanent: boolean): Promise<JobS
   return invoke<JobStartedDto>("start_delete", { targets, permanent });
 }
 
+export function startTransfer(
+  sources: string[],
+  base: string,
+  dest: string,
+  isMove: boolean,
+): Promise<JobStartedDto> {
+  return invoke<JobStartedDto>("start_transfer", { sources, base, dest, isMove });
+}
+
 export function cancelJob(id: number): Promise<void> {
   return invoke("job_action", { id, action: "cancel" });
 }

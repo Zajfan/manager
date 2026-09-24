@@ -5,7 +5,7 @@
 
 import { For, Show, createEffect, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelJob, onJobFinished, onJobProgress, startDelete } from "./jobs";
+import { cancelJob, onJobFinished, onJobProgress, startDelete, startTransfer } from "./jobs";
 import {
   clampCursor,
   entryToOpen,
@@ -27,10 +27,22 @@ interface PendingDelete {
   permanent: boolean;
 }
 
+interface PendingTransfer {
+  sources: EntryDto[];
+  isMove: boolean;
+}
+
 export interface PanelProps {
   initialPath: string;
   active: () => boolean;
   onActivate: () => void;
+  /** Called whenever this panel navigates, so the other one can default
+   * F5/F6's destination to it. Optional only so tests that don't care about
+   * cross-panel wiring can skip it. */
+  onPathChange?: (path: string) => void;
+  /** The other panel's current path, pre-filled as F5/F6's destination —
+   * same convention as `manager-tui`'s transfer dialog. */
+  otherPath?: () => string;
 }
 
 async function fetchListing(path: string): Promise<ListingDto> {
@@ -47,8 +59,17 @@ export function Panel(props: PanelProps) {
   const [cursor, setCursor] = createSignal(0);
   const [marked, setMarked] = createSignal<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = createSignal<PendingDelete | null>(null);
+  const [pendingTransfer, setPendingTransfer] = createSignal<PendingTransfer | null>(null);
+  const [destInput, setDestInput] = createSignal("");
   const [activeJob, setActiveJob] = createSignal<ActiveJob | null>(null);
   const [listing, { refetch }] = createResource(path, fetchListing);
+
+  createEffect(() => props.onPathChange?.(path()));
+
+  let destInputEl: HTMLInputElement | undefined;
+  createEffect(() => {
+    if (pendingTransfer()) destInputEl?.focus();
+  });
 
   onMount(() => {
     const progress = onJobProgress((event) => {
@@ -123,8 +144,42 @@ export function Panel(props: PanelProps) {
     setActiveJob({ id: started.id, title: started.title });
   }
 
+  function askToTransfer(isMove: boolean) {
+    const sources = selection(entries(), marked(), cursor());
+    if (sources.length === 0) return;
+    setDestInput(props.otherPath?.() ?? "");
+    setPendingTransfer({ sources, isMove });
+  }
+
+  async function runTransfer(pending: PendingTransfer, dest: string) {
+    if (dest.trim() === "") return;
+    setPendingTransfer(null);
+    setMarked(new Set<string>());
+    const started = await startTransfer(
+      pending.sources.map((e) => e.path),
+      path(),
+      dest,
+      pending.isMove,
+    );
+    setActiveJob({ id: started.id, title: started.title });
+  }
+
   function handleKey(event: KeyboardEvent) {
     if (!props.active()) return;
+
+    const transfer = pendingTransfer();
+    if (transfer) {
+      if (event.key === "Enter") {
+        void runTransfer(transfer, destInput());
+        event.preventDefault();
+      } else if (event.key === "Escape") {
+        setPendingTransfer(null);
+        event.preventDefault();
+      }
+      // Any other key (typing, arrows, Backspace within the field) is left
+      // alone so the native <input> handles it itself.
+      return;
+    }
 
     const pending = confirmDelete();
     if (pending) {
@@ -160,6 +215,12 @@ export function Panel(props: PanelProps) {
       case "F8":
         askToDelete(event.shiftKey);
         break;
+      case "F5":
+        askToTransfer(false);
+        break;
+      case "F6":
+        askToTransfer(true);
+        break;
       case "Escape": {
         const job = activeJob();
         if (!job) return;
@@ -184,6 +245,21 @@ export function Panel(props: PanelProps) {
       <div class="panel-header" title={path()}>
         {path()}
       </div>
+      <Show when={pendingTransfer()}>
+        {(transfer) => (
+          <div class="panel-status confirm transfer">
+            <span>
+              {transfer().isMove ? "Move" : "Copy"} {transfer().sources.length} item
+              {transfer().sources.length === 1 ? "" : "s"} to:
+            </span>
+            <input
+              ref={destInputEl}
+              value={destInput()}
+              onInput={(e) => setDestInput(e.currentTarget.value)}
+            />
+          </div>
+        )}
+      </Show>
       <Show when={confirmDelete()}>
         {(pending) => (
           <div class="panel-status confirm">

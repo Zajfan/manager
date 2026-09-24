@@ -10,6 +10,11 @@ import "./app.css";
 export default function App() {
   const [home, setHome] = createSignal<string | null>(null);
   const [active, setActive] = createSignal<0 | 1>(0);
+  // Each panel reports its own current folder here so the other one can
+  // default F5/F6's destination to it, the same way manager-tui's transfer
+  // dialog starts pre-filled with the *other* panel's path.
+  const [pathOf0, setPathOf0] = createSignal("");
+  const [pathOf1, setPathOf1] = createSignal("");
 
   onMount(async () => {
     setHome(await invoke<string>("home_dir"));
@@ -31,11 +36,15 @@ export default function App() {
               initialPath={startPath()}
               active={() => active() === 0}
               onActivate={() => setActive(0)}
+              onPathChange={setPathOf0}
+              otherPath={pathOf1}
             />
             <Panel
               initialPath={startPath()}
               active={() => active() === 1}
               onActivate={() => setActive(1)}
+              onPathChange={setPathOf1}
+              otherPath={pathOf0}
             />
           </div>
         )}

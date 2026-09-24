@@ -200,16 +200,21 @@ other archives (the paths already describe them; nothing extracts them yet).
 terminal version's feature set one piece at a time: two panels, arrow keys, Enter to open
 a folder, Backspace to go up, Tab to switch panels, click and double-click, Space/Insert
 to mark a file or folder (shown in a different colour; cleared on navigating elsewhere,
-same as the terminal version), and Delete or F8 (Shift for permanent) to delete the
-marked items, or the one under the cursor, through the same background job engine the
-terminal version uses — with a progress readout and Esc to cancel. It reuses
-`manager-core` directly: sorting, folders-first ordering and the job engine itself are
-the same code the terminal version calls, not a second implementation.
+same as the terminal version), Delete or F8 (Shift for permanent) to delete the marked
+items, or the one under the cursor, and F5/F6 to copy or move them — a destination field
+pre-filled with the other panel's path, editable the same way the terminal version's is
+(a relative name like `backup` or `../elsewhere` is taken relative to where the items
+are, an absolute path or another `scheme://` URI replaces it outright). All three run
+through the same background job engine the terminal version uses, with a progress
+readout and Esc to cancel. It reuses `manager-core` directly: sorting, folders-first
+ordering and the job engine itself are the same code the terminal version calls, not a
+second implementation.
 
-What it doesn't have yet, on purpose rather than by oversight: copying, moving, previews,
-search, compare, duplicates, or SFTP. It also doesn't yet ask what to do about a failed
-delete (permission denied, say) the way the terminal version's error dialog does — for
-now such an item is simply skipped and counted in the job's report. All of that already
+What it doesn't have yet, on purpose rather than by oversight: previews, search, compare,
+duplicates, or SFTP. It also doesn't yet ask what to do about a failed item (permission
+denied, say) or a destination that already exists, the way the terminal version's error
+and conflict dialogs do — for now such an item is simply skipped and counted in the job's
+report. All of that already
 works in the terminal version; bringing it to the GUI is real, separate work, not assumed
 to come along for free.
 

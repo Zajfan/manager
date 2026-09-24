@@ -17,6 +17,7 @@ pub fn run() {
             commands::list_dir,
             commands::home_dir,
             commands::start_delete,
+            commands::start_transfer,
             commands::job_action,
             commands::answer_error,
         ])
