@@ -32,6 +32,7 @@ pub fn run() {
             commands::sync_compare,
             commands::start_duplicates,
             commands::cancel_duplicates,
+            commands::connect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

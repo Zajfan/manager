@@ -57,6 +57,10 @@ function fakeInvoke(byPath: Record<string, ListingDto>) {
       const path = args?.path as string;
       return path.slice(0, path.lastIndexOf("/") + 1);
     }
+    if (command === "connect") {
+      if (args?.host === "bad-host") throw new Error("connection refused");
+      return `sftp://${args?.username}@${args?.host}:${args?.port}/`;
+    }
     throw new Error(`unexpected command: ${command}`);
   });
 }
@@ -613,6 +617,78 @@ describe("Panel", () => {
     fireEvent.keyDown(screen.getByText("a.txt").closest(".panel")!, { key: "d", ctrlKey: true });
 
     expect(onOpenDuplicates).toHaveBeenCalledWith("file:///home/");
+  });
+
+  it("Ctrl+N opens a connect dialog with four fields", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    await screen.findByText("a.txt");
+
+    fireEvent.keyDown(screen.getByText("a.txt").closest(".panel")!, { key: "n", ctrlKey: true });
+
+    expect(screen.getByPlaceholderText("host")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("port")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("username")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("password")).toBeInTheDocument();
+  });
+
+  it("connecting successfully opens the returned path as an ordinary folder", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+      "sftp://alice@example.com:22/": listing("sftp://alice@example.com:22/", [["remote.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    const panel = (await screen.findByText("a.txt")).closest(".panel")!;
+    fireEvent.keyDown(panel, { key: "n", ctrlKey: true });
+
+    fireEvent.input(screen.getByPlaceholderText("host"), { target: { value: "example.com" } });
+    fireEvent.input(screen.getByPlaceholderText("username"), { target: { value: "alice" } });
+    fireEvent.input(screen.getByPlaceholderText("password"), { target: { value: "hunter2" } });
+    fireEvent.keyDown(panel, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("connect", {
+        host: "example.com",
+        port: 22,
+        username: "alice",
+        password: "hunter2",
+      }),
+    );
+    expect(await screen.findByText("remote.txt")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("host")).not.toBeInTheDocument();
+  });
+
+  it("a failed connection shows the error and leaves the dialog open to retry", async () => {
+    setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    const panel = (await screen.findByText("a.txt")).closest(".panel")!;
+    fireEvent.keyDown(panel, { key: "n", ctrlKey: true });
+    fireEvent.input(screen.getByPlaceholderText("host"), { target: { value: "bad-host" } });
+
+    fireEvent.keyDown(panel, { key: "Enter" });
+
+    expect(await screen.findByText(/connection refused/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("host")).toBeInTheDocument();
+    // Still on the original folder — a failed connect never navigates.
+    expect(screen.getByText("a.txt")).toBeInTheDocument();
+  });
+
+  it("Escape closes the connect dialog without connecting", async () => {
+    const invoke = setup({
+      "file:///home/": listing("file:///home/", [["a.txt", false]]),
+    });
+    render(() => <Panel initialPath="file:///home/" active={() => true} onActivate={() => {}} />);
+    const panel = (await screen.findByText("a.txt")).closest(".panel")!;
+    fireEvent.keyDown(panel, { key: "n", ctrlKey: true });
+
+    fireEvent.keyDown(panel, { key: "Escape" });
+
+    expect(screen.queryByPlaceholderText("host")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
   });
 
   it("F7 without Alt does nothing — it isn't a bound key on its own", async () => {

@@ -224,13 +224,19 @@ very same job engine and its conflict/error dialogs F5 already uses. Ctrl+D look
 files with identical content under the active panel's folder the same way, grouped as
 they're found; Space marks a file, K keeps the first of each group and marks the rest,
 and D moves the marked files (or the one under the cursor) to the trash — through the
-same F8 uses, error dialog included. It reuses `manager-core` directly: sorting,
-folders-first ordering, the job engine and the search/compare/duplicate walks are the
-same code the terminal version calls, not a second implementation.
+same F8 uses, error dialog included. Ctrl+N connects a panel to an SFTP server (host,
+port, username, password); once connected it's an ordinary folder like any other — every
+feature above already works with it, because they're all built on the same `Vfs` the
+terminal version's are. It reuses `manager-core` directly: sorting, folders-first
+ordering, the job engine, the search/compare/duplicate walks and the SFTP connection are
+the same code the terminal version calls, not a second implementation. That makes this
+the terminal version's full feature set, brought to the GUI one piece at a time across
+this project's history rather than all at once — see [docs/TECH_STACK.md](docs/TECH_STACK.md)
+for how each piece landed.
 
-What it doesn't have yet, on purpose rather than by oversight: previews or SFTP. Both
-already work in the terminal version; bringing them to the GUI is real, separate work,
-not assumed to come along for free.
+What it doesn't have yet, on purpose rather than by oversight: previewing a file's
+contents (F3 in the terminal version). That already works there; bringing it to the GUI
+is real, separate work, not assumed to come along for free.
 
 ```sh
 cd crates/manager-gui

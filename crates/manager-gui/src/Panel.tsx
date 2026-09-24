@@ -87,6 +87,13 @@ export function Panel(props: PanelProps) {
   const [destInput, setDestInput] = createSignal("");
   const [activeJob, setActiveJob] = createSignal<ActiveJob | null>(null);
   const [pendingCursorTarget, setPendingCursorTarget] = createSignal<string | null>(null);
+  const [connectOpen, setConnectOpen] = createSignal(false);
+  const [host, setHost] = createSignal("");
+  const [port, setPort] = createSignal("22");
+  const [username, setUsername] = createSignal("");
+  const [password, setPassword] = createSignal("");
+  const [connectError, setConnectError] = createSignal<string | null>(null);
+  const [connecting, setConnecting] = createSignal(false);
   const [listing, { refetch }] = createResource(path, fetchListing);
 
   createEffect(() => props.onPathChange?.(path()));
@@ -121,6 +128,11 @@ export function Panel(props: PanelProps) {
   let destInputEl: HTMLInputElement | undefined;
   createEffect(() => {
     if (pendingTransfer()) destInputEl?.focus();
+  });
+
+  let hostInputEl: HTMLInputElement | undefined;
+  createEffect(() => {
+    if (connectOpen()) hostInputEl?.focus();
   });
 
   onMount(() => {
@@ -224,6 +236,36 @@ export function Panel(props: PanelProps) {
     setActiveJob({ id: started.id, title: started.title });
   }
 
+  function openConnect() {
+    setHost("");
+    setPort("22");
+    setUsername("");
+    setPassword("");
+    setConnectError(null);
+    setConnectOpen(true);
+  }
+
+  async function runConnect() {
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const uri = await invoke<string>("connect", {
+        host: host(),
+        port: Number(port()) || 22,
+        username: username(),
+        password: password(),
+      });
+      setConnectOpen(false);
+      setPath(uri);
+      setCursor(0);
+      setMarked(new Set<string>());
+    } catch (err) {
+      setConnectError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   /** Conflict: o/u/s/r (Shift = apply to every later conflict in this job),
    * c/Esc cancels. Error: r/s/a, c/Esc cancels. Mirrors `manager-tui`'s own
    * `handle_question_key` exactly. Returns whether the key was consumed. */
@@ -262,6 +304,19 @@ export function Panel(props: PanelProps) {
       return;
     }
 
+    if (connectOpen()) {
+      if (event.key === "Enter") {
+        if (!connecting()) void runConnect();
+        event.preventDefault();
+      } else if (event.key === "Escape") {
+        if (!connecting()) setConnectOpen(false);
+        event.preventDefault();
+      }
+      // Any other key (typing, Tab between fields, Backspace) is left alone
+      // so the native <input>s handle it themselves.
+      return;
+    }
+
     const transfer = pendingTransfer();
     if (transfer) {
       if (event.key === "Enter") {
@@ -284,6 +339,12 @@ export function Panel(props: PanelProps) {
 
     if (event.ctrlKey && event.key.toLowerCase() === "d") {
       props.onOpenDuplicates?.(path());
+      event.preventDefault();
+      return;
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === "n") {
+      openConnect();
       event.preventDefault();
       return;
     }
@@ -352,6 +413,33 @@ export function Panel(props: PanelProps) {
       <div class="panel-header" title={path()}>
         {path()}
       </div>
+      <Show when={connectOpen()}>
+        <div class="panel-status connect">
+          <input ref={hostInputEl} placeholder="host" value={host()} onInput={(e) => setHost(e.currentTarget.value)} />
+          <input
+            placeholder="port"
+            value={port()}
+            onInput={(e) => setPort(e.currentTarget.value)}
+          />
+          <input
+            placeholder="username"
+            value={username()}
+            onInput={(e) => setUsername(e.currentTarget.value)}
+          />
+          <input
+            type="password"
+            placeholder="password"
+            value={password()}
+            onInput={(e) => setPassword(e.currentTarget.value)}
+          />
+        </div>
+        <Show when={connecting()}>
+          <div class="panel-status job">Connecting…</div>
+        </Show>
+        <Show when={connectError()}>
+          {(message) => <div class="panel-status error">{message()}</div>}
+        </Show>
+      </Show>
       <Show when={pendingTransfer()}>
         {(transfer) => (
           <div class="panel-status confirm transfer">

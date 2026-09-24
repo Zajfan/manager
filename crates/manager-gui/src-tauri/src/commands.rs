@@ -12,6 +12,7 @@ use std::sync::Arc;
 use manager_core::compare::{CompareSpec, SyncDirection};
 use manager_core::duplicates::DuplicateSpec;
 use manager_core::jobs::JobSpec;
+use manager_core::remote::Auth;
 use manager_core::search::{Masks, Needle, SearchSpec};
 use manager_core::{sort_entries, Router, SortKey, SortOrder, SortSpec, VPath, Vfs};
 
@@ -338,4 +339,29 @@ pub fn start_duplicates(
 #[tauri::command]
 pub fn cancel_duplicates(state: tauri::State<'_, AppState>) {
     state.duplicates.cancel();
+}
+
+/// Connects to an SFTP server with a password, the same as Ctrl+N. On
+/// success, the panel that asked for this just opens the returned path —
+/// from there it's an ordinary folder, since every other command already
+/// works through the same `Vfs`. The server's host key is checked and
+/// remembered in `~/.ssh/known_hosts` exactly like `ssh` and `scp` do; a key
+/// that's changed since the last connection fails outright rather than
+/// prompting, the same as they do.
+#[tauri::command]
+pub async fn connect(
+    state: tauri::State<'_, AppState>,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+) -> Result<String, String> {
+    let authority = format!("{username}@{host}:{port}");
+    let auth = Auth::Password(password);
+    let vpath = state
+        .router
+        .connect(&authority, &host, port, &username, &auth)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(vpath.to_uri())
 }

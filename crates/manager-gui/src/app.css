@@ -102,6 +102,34 @@ body {
   padding: 1px 4px;
 }
 
+.panel-status.connect {
+  display: flex;
+  gap: 6px;
+}
+
+.panel-status.connect input {
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font: inherit;
+  padding: 1px 4px;
+}
+
+.panel-status.connect input:nth-child(1) {
+  flex: 3;
+}
+
+.panel-status.connect input:nth-child(2) {
+  flex: 1;
+}
+
+.panel-status.connect input:nth-child(3),
+.panel-status.connect input:nth-child(4) {
+  flex: 2;
+}
+
 .panel-status.job {
   color: var(--accent);
   border-bottom: 1px solid var(--border);
