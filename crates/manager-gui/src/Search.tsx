@@ -4,7 +4,7 @@
 // running — the list has to be usable before it's complete.
 
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { cancelSearch, onSearchFinished, onSearchFound, onSearchProgress, startSearch } from "./search";
+import { cancelSearch, onSearchFinished, onSearchFound, onSearchProgress, startSearch } from "./searchApi";
 import { moveCursor as moveCursorTo } from "./panelLogic";
 import type { EntryDto, SearchReportDto } from "./types";
 import { formatSize } from "./format";
