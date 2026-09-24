@@ -9,6 +9,7 @@
 
 use std::time::SystemTime;
 
+use manager_core::compare::{DiffEntry, DiffStatus, Side};
 use manager_core::jobs::{ConflictQuestion, ErrorQuestion, JobReport, Outcome, Phase, Progress};
 use manager_core::search::SearchReport;
 use manager_core::{Entry, EntryKind, VPath};
@@ -193,6 +194,67 @@ impl From<&SearchReport> for SearchReportDto {
     fn from(report: &SearchReport) -> Self {
         SearchReportDto {
             found: report.found,
+            scanned: report.scanned,
+            unreadable: report.unreadable,
+            cancelled: report.cancelled,
+        }
+    }
+}
+
+/// One name, and how it compares between the two folders being compared.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffEntryDto {
+    /// `rel_path` joined with `/` — stable, unique within one comparison,
+    /// and what `sync_compare` is told which entries to act on.
+    pub key: String,
+    pub name: String,
+    /// `None` when this name exists only on the other side.
+    pub left: Option<EntryDto>,
+    pub right: Option<EntryDto>,
+    /// `"leftOnly"`, `"rightOnly"`, `"same"`, `"differs"` or `"kindMismatch"`.
+    pub status: &'static str,
+    /// Which side is newer, when that's known — `null` otherwise.
+    pub newer: Option<&'static str>,
+}
+
+impl From<&DiffEntry> for DiffEntryDto {
+    fn from(diff: &DiffEntry) -> Self {
+        DiffEntryDto {
+            key: diff.rel_path.join("/"),
+            name: diff.name().to_string(),
+            left: diff.left.as_ref().map(EntryDto::from),
+            right: diff.right.as_ref().map(EntryDto::from),
+            status: match diff.status {
+                DiffStatus::LeftOnly => "leftOnly",
+                DiffStatus::RightOnly => "rightOnly",
+                DiffStatus::Same => "same",
+                DiffStatus::Differs => "differs",
+                DiffStatus::KindMismatch => "kindMismatch",
+            },
+            newer: diff.newer.map(|side| match side {
+                Side::Left => "left",
+                Side::Right => "right",
+            }),
+        }
+    }
+}
+
+/// Sent once when a comparison ends, however it ends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareReportDto {
+    pub differences: u64,
+    pub scanned: u64,
+    /// Folders that couldn't be listed on one or both sides.
+    pub unreadable: u64,
+    pub cancelled: bool,
+}
+
+impl From<&manager_core::compare::CompareReport> for CompareReportDto {
+    fn from(report: &manager_core::compare::CompareReport) -> Self {
+        CompareReportDto {
+            differences: report.differences,
             scanned: report.scanned,
             unreadable: report.unreadable,
             cancelled: report.cancelled,
@@ -394,6 +456,70 @@ mod tests {
         let dto = ErrorQuestionDto::from(&question);
         assert_eq!(dto.job, 4);
         assert!(!dto.message.is_empty());
+    }
+
+    #[test]
+    fn a_diff_entrys_key_is_its_rel_path_joined_by_slash() {
+        let diff = DiffEntry {
+            rel_path: vec!["docs".into(), "a.txt".into()],
+            left: Some(entry("a.txt", EntryKind::File, 5)),
+            right: None,
+            status: DiffStatus::LeftOnly,
+            newer: None,
+        };
+        let dto = DiffEntryDto::from(&diff);
+        assert_eq!(dto.key, "docs/a.txt");
+        assert_eq!(dto.name, "a.txt");
+        assert!(dto.left.is_some());
+        assert!(dto.right.is_none());
+        assert_eq!(dto.status, "leftOnly");
+        assert_eq!(dto.newer, None);
+    }
+
+    #[test]
+    fn a_diff_entrys_status_and_newer_side_translate_to_plain_strings() {
+        let base = |status, newer| DiffEntry {
+            rel_path: vec!["a.txt".into()],
+            left: Some(entry("a.txt", EntryKind::File, 1)),
+            right: Some(entry("a.txt", EntryKind::File, 2)),
+            status,
+            newer,
+        };
+        assert_eq!(
+            DiffEntryDto::from(&base(DiffStatus::Same, None)).status,
+            "same"
+        );
+        assert_eq!(
+            DiffEntryDto::from(&base(DiffStatus::Differs, None)).status,
+            "differs"
+        );
+        assert_eq!(
+            DiffEntryDto::from(&base(DiffStatus::KindMismatch, None)).status,
+            "kindMismatch"
+        );
+        assert_eq!(
+            DiffEntryDto::from(&base(DiffStatus::Differs, Some(Side::Left))).newer,
+            Some("left")
+        );
+        assert_eq!(
+            DiffEntryDto::from(&base(DiffStatus::Differs, Some(Side::Right))).newer,
+            Some("right")
+        );
+    }
+
+    #[test]
+    fn a_compare_report_carries_its_counts_and_whether_it_was_cancelled() {
+        let report = manager_core::compare::CompareReport {
+            differences: 3,
+            scanned: 40,
+            unreadable: 1,
+            cancelled: true,
+        };
+        let dto = CompareReportDto::from(&report);
+        assert_eq!(dto.differences, 3);
+        assert_eq!(dto.scanned, 40);
+        assert_eq!(dto.unreadable, 1);
+        assert!(dto.cancelled);
     }
 
     #[test]

@@ -215,13 +215,19 @@ Alt+F7 opens a floating overlay to find files under the active panel's folder �
 mask and an optional Containing text, Alt+C for case, Alt+H for hidden files, exactly the
 terminal version's own switches — with hits arriving live while it's still searching;
 Enter on one takes the panel there and puts the cursor on it, Esc closes it (and stops
-the search if it's still running). It reuses `manager-core` directly: sorting,
-folders-first ordering, the job engine and the search walk are the same code the terminal
-version calls, not a second implementation.
+the search if it's still running). Ctrl+F9 compares the two panels' folders the same way,
+all the way down — Alt+C to check content instead of trusting size and modified time,
+Alt+H for hidden files — with Space to mark a difference that isn't already identical
+(A marks every one that is), and `>`, `<` or U to sync the marked differences (or the one
+under the cursor) left-to-right, right-to-left, or whichever side is newer, through the
+very same job engine and its conflict/error dialogs F5 already uses. It reuses
+`manager-core` directly: sorting, folders-first ordering, the job engine and the
+search/compare walks are the same code the terminal version calls, not a second
+implementation.
 
-What it doesn't have yet, on purpose rather than by oversight: previews, compare,
-duplicates, or SFTP. All of that already works in the terminal version; bringing it to
-the GUI is real, separate work, not assumed to come along for free.
+What it doesn't have yet, on purpose rather than by oversight: previews, duplicates, or
+SFTP. All of that already works in the terminal version; bringing it to the GUI is real,
+separate work, not assumed to come along for free.
 
 ```sh
 cd crates/manager-gui

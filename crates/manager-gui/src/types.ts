@@ -92,3 +92,36 @@ export interface SearchProgressEvent {
   scanned: number;
   found: number;
 }
+
+export type DiffStatus = "leftOnly" | "rightOnly" | "same" | "differs" | "kindMismatch";
+export type Side = "left" | "right";
+
+/** One name, and how it compares between the two folders being compared. */
+export interface DiffEntryDto {
+  /** Unique within one comparison; what `syncCompare` is told to act on. */
+  key: string;
+  name: string;
+  /** `null` when this name exists only on the other side. */
+  left: EntryDto | null;
+  right: EntryDto | null;
+  status: DiffStatus;
+  /** Which side is newer, when that's known. */
+  newer: Side | null;
+}
+
+/** Sent once when a comparison ends, however it ends. */
+export interface CompareReportDto {
+  differences: number;
+  scanned: number;
+  /** Folders that couldn't be listed on one or both sides. */
+  unreadable: number;
+  cancelled: boolean;
+}
+
+/** The payload of a `compare-progress` event. */
+export interface CompareProgressEvent {
+  scanned: number;
+  found: number;
+}
+
+export type SyncDirection = "leftToRight" | "rightToLeft" | "newer";

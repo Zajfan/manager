@@ -248,3 +248,22 @@ body {
   flex: 1;
   min-height: 0;
 }
+
+.compare-table td.status {
+  width: 110px;
+  color: var(--dim);
+}
+
+.compare-table td.status.leftOnly,
+.compare-table td.status.rightOnly {
+  color: var(--marked);
+}
+
+.compare-table td.status.differs {
+  color: #e07070;
+}
+
+.compare-table td.status.kindMismatch {
+  color: #e07070;
+  font-weight: bold;
+}

@@ -4,6 +4,7 @@
 
 import { Show, createSignal, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { Compare } from "./Compare";
 import { Panel } from "./Panel";
 import { Search } from "./Search";
 import "./app.css";
@@ -21,6 +22,9 @@ export default function App() {
   const [search, setSearch] = createSignal<{ panel: 0 | 1; root: string } | null>(null);
   const [gotoTarget0, setGotoTarget0] = createSignal<string | null>(null);
   const [gotoTarget1, setGotoTarget1] = createSignal<string | null>(null);
+  // Ctrl+F9: compares the left panel's folder against the right one's,
+  // same as the terminal version — not tied to whichever panel is active.
+  const [compareOpen, setCompareOpen] = createSignal(false);
 
   onMount(async () => {
     setHome(await invoke<string>("home_dir"));
@@ -29,6 +33,9 @@ export default function App() {
   function handleKey(event: KeyboardEvent) {
     if (event.key === "Tab") {
       setActive((a) => (a === 0 ? 1 : 0));
+      event.preventDefault();
+    } else if (event.ctrlKey && event.key === "F9") {
+      setCompareOpen(true);
       event.preventDefault();
     }
   }
@@ -72,6 +79,9 @@ export default function App() {
         {(s) => (
           <Search rootPath={s().root} onClose={() => setSearch(null)} onGoto={handleGoto} />
         )}
+      </Show>
+      <Show when={compareOpen()}>
+        <Compare left={pathOf0()} right={pathOf1()} onClose={() => setCompareOpen(false)} />
       </Show>
     </div>
   );

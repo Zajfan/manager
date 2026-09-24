@@ -9,10 +9,12 @@
 
 use std::sync::Arc;
 
+use manager_core::compare::{CompareSpec, SyncDirection};
 use manager_core::jobs::JobSpec;
 use manager_core::search::{Masks, Needle, SearchSpec};
 use manager_core::{sort_entries, Router, SortKey, SortOrder, SortSpec, VPath, Vfs};
 
+use crate::compare::CompareState;
 use crate::dto::{JobStartedDto, ListingDto};
 use crate::jobs::JobsState;
 use crate::search::SearchState;
@@ -23,6 +25,7 @@ pub struct AppState {
     pub router: Arc<Router>,
     pub jobs: JobsState,
     pub search: SearchState,
+    pub compare: CompareState,
 }
 
 impl AppState {
@@ -31,6 +34,7 @@ impl AppState {
             router: Arc::new(Router::new()),
             jobs: JobsState::new(app),
             search: SearchState::new(),
+            compare: CompareState::new(),
         }
     }
 }
@@ -233,4 +237,67 @@ pub fn answer_conflict(
     apply_to_all: bool,
 ) -> Result<(), String> {
     state.jobs.answer_conflict(job, &action, apply_to_all)
+}
+
+/// Compares `left` against `right`, all the way down. `by_content` hashes
+/// both sides of an equal-sized file instead of trusting the modified time —
+/// slower, but certain. Starting a new comparison cancels whatever one was
+/// already running. Differences, a periodic scanned-count and the eventual
+/// report arrive as `compare-found`, `compare-progress` and
+/// `compare-finished` events.
+#[tauri::command]
+pub fn start_compare(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    left: String,
+    right: String,
+    by_content: bool,
+    include_hidden: bool,
+) -> Result<(), String> {
+    let left = VPath::parse(&left).map_err(|e| e.to_string())?;
+    let right = VPath::parse(&right).map_err(|e| e.to_string())?;
+    let spec = CompareSpec {
+        left,
+        right,
+        by_content,
+        include_hidden,
+    };
+    state
+        .compare
+        .start(Arc::clone(&state.router) as Arc<dyn Vfs>, spec, app);
+    Ok(())
+}
+
+/// Stops the running comparison, if there is one.
+#[tauri::command]
+pub fn cancel_compare(state: tauri::State<'_, AppState>) {
+    state.compare.cancel();
+}
+
+/// Syncs the differences named by `keys` (each a `DiffEntryDto.key`) in the
+/// given `direction` (`"leftToRight"`, `"rightToLeft"` or `"newer"`),
+/// starting one job per destination folder through the same job engine F5
+/// uses. Returns each new job's id and title; its progress and any
+/// conflict/error arrive as the ordinary job-progress/job-conflict/job-error
+/// events.
+#[tauri::command]
+pub fn sync_compare(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    keys: Vec<String>,
+    direction: String,
+) -> Result<Vec<JobStartedDto>, String> {
+    let direction = match direction.as_str() {
+        "leftToRight" => SyncDirection::LeftToRight,
+        "rightToLeft" => SyncDirection::RightToLeft,
+        "newer" => SyncDirection::Newer,
+        other => return Err(format!("unknown sync direction: {other}")),
+    };
+    state.compare.sync(
+        &keys,
+        direction,
+        &state.jobs,
+        Arc::clone(&state.router) as Arc<dyn Vfs>,
+        app,
+    )
 }
