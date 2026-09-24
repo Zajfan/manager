@@ -31,6 +31,7 @@ export default function App() {
         <div class="app-root">
           <button
             class="layout-switcher-button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => setSwitcherOpen((open) => !open)}
             title="Change layout"
           >
@@ -42,6 +43,7 @@ export default function App() {
                 {(candidate) => (
                   <button
                     classList={{ active: candidate === id() }}
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => void chooseLayout(candidate)}
                   >
                     {LAYOUTS[candidate].label}
