@@ -5,23 +5,22 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(() => ({
-  plugins: [solid()],
+export default defineConfig(({ mode }) => ({
+  // vite-plugin-solid enables its HMR transform whenever `command === "serve"`
+  // and `mode !== "production"` — true under Vitest too, since Vitest runs
+  // Vite with mode "test". That transform injects an import of the plugin's
+  // "/@solid-refresh" virtual module, which only a real Vite dev server can
+  // serve; under Vitest's Node-based runner it's an unparseable path on
+  // Windows, crashing every component test before it runs (Linux/macOS
+  // happened to tolerate the bogus path). `hot: false` in test mode turns
+  // the transform off, the same as passing `--mode production` would.
+  plugins: [solid({ hot: mode !== "test" })],
 
   // Component tests (`npm test`) render into a simulated DOM; nothing about
   // `tauri dev`/`tauri build` reads this section.
   test: {
     environment: "jsdom",
     setupFiles: ["./src/vitest-setup.ts"],
-    // Without this, Vitest transforms .tsx in SSR mode, so vite-plugin-solid's
-    // HMR transform emits an import of its "/@solid-refresh" virtual module —
-    // meaningless outside a real Vite dev server, and on Windows it isn't
-    // even a parseable path, crashing before a single test runs. Forcing the
-    // "web" transform for jsx/tsx is vite-plugin-solid's own documented
-    // Vitest setup (https://github.com/solidjs/vite-plugin-solid#testing).
-    transformMode: {
-      web: [/\.[jt]sx?$/],
-    },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
